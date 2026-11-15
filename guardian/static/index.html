@@ -4,164 +4,41 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Parental Gateway</title>
-<style>
-  :root{--bg:#0f1420;--panel:#1a2130;--panel2:#232c3d;--text:#e6ebf5;--muted:#8b97ad;
-        --accent:#4f9cf9;--block:#f9534f;--allow:#3fbf7f;--border:#2a3344;}
-  *{box-sizing:border-box;}
-  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-       background:var(--bg);color:var(--text);}
-  header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;}
-  header h1{font-size:18px;margin:0;font-weight:600;}
-  header .win{margin-left:auto;color:var(--muted);font-size:13px;}
-  .wrap{max-width:1200px;margin:0 auto;padding:24px 16px;}
-  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;}
-  .tile{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;}
-  .tile .n{font-size:26px;font-weight:700;}
-  .tile .l{color:var(--muted);font-size:13px;margin-top:4px;}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
-  @media(max-width:860px){.grid{grid-template-columns:1fr;}}
-  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:16px;}
-  .panel h2{font-size:13px;margin:0;padding:12px 16px;border-bottom:1px solid var(--border);
-            color:var(--muted);text-transform:uppercase;letter-spacing:.04em;}
-  table{width:100%;border-collapse:collapse;font-size:13px;}
-  th,td{text-align:left;padding:8px 16px;border-bottom:1px solid var(--border);}
-  th{color:var(--muted);font-weight:500;}
-  tr:last-child td{border-bottom:none;}
-  .mono{font-family:ui-monospace,Menlo,Consolas,monospace;}
-  .tag{font-size:11px;padding:2px 8px;border-radius:20px;background:var(--panel2);color:var(--muted);}
-  .tag.blocked{background:rgba(249,83,79,.15);color:var(--block);}
-  .tag.allowed{background:rgba(63,191,127,.12);color:var(--allow);}
-  button{background:var(--panel2);color:var(--text);border:1px solid var(--border);
-         border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;}
-  button:hover{border-color:var(--accent);}
-  button.block{color:var(--block);}
-  select,input{background:var(--panel2);color:var(--text);border:1px solid var(--border);
-               border-radius:6px;padding:4px 8px;font-size:12px;}
-  .feed{max-height:420px;overflow:auto;}
-  .row-form{display:flex;gap:8px;padding:12px 16px;flex-wrap:wrap;align-items:center;}
-  .muted{color:var(--muted);}
-</style>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <h1>🛡️ Parental Gateway</h1>
-  <span class="win">last 24 hours</span>
-</header>
-<div class="wrap">
-  <div class="tiles">
-    <div class="tile"><div class="n" id="t-total">–</div><div class="l">DNS lookups</div></div>
-    <div class="tile"><div class="n" id="t-blocked">–</div><div class="l">Blocked</div></div>
-    <div class="tile"><div class="n" id="t-devices">–</div><div class="l">Active devices</div></div>
-  </div>
-
-  <div class="grid">
-    <div class="panel">
-      <h2>Devices</h2>
-      <table><thead><tr><th>Device</th><th>Group</th><th>Lookups</th><th>Blocked</th></tr></thead>
-      <tbody id="devices"></tbody></table>
-    </div>
-    <div class="panel">
-      <h2>Top domains</h2>
-      <table><thead><tr><th>Domain</th><th>Hits</th><th>Blk</th><th></th></tr></thead>
-      <tbody id="domains"></tbody></table>
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>Rules</h2>
-    <div class="row-form">
-      <select id="r-action"><option value="block">Block</option><option value="allow">Allow</option></select>
-      <select id="r-scope"><option value="global">Everyone</option><option value="group">Kids group</option></select>
-      <input id="r-pattern" placeholder="domain e.g. tiktok.com" style="flex:1;min-width:180px">
-      <button onclick="addRule()">Add rule</button>
-    </div>
-    <table><thead><tr><th>Action</th><th>Scope</th><th>Pattern</th><th></th></tr></thead>
-    <tbody id="rules"></tbody></table>
-  </div>
-
-  <div class="panel">
-    <h2>Live activity</h2>
-    <div class="feed"><table><tbody id="feed"></tbody></table></div>
-  </div>
+<div id="login" class="login-wrap" hidden>
+  <form class="login" id="login-form" autocomplete="on">
+    <h1 id="login-title">Parental Gateway</h1>
+    <div class="muted" id="login-sub">Sign in to manage your network.</div>
+    <input type="password" id="login-pw" placeholder="Password" autocomplete="current-password" required>
+    <input type="password" id="login-pw2" placeholder="Repeat password" autocomplete="new-password" hidden>
+    <button class="primary" type="submit" id="login-btn">Sign in</button>
+    <div class="error" id="login-err"></div>
+  </form>
 </div>
 
-<script>
-const GROUPS = ["default","kids"];
-const fmtTime = ts => new Date(ts*1000).toLocaleTimeString();
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-async function load(){
-  const d = await (await fetch('/api/overview')).json();
-  document.getElementById('t-total').textContent   = d.counts.total || 0;
-  document.getElementById('t-blocked').textContent = d.counts.blocked || 0;
-  document.getElementById('t-devices').textContent = d.devices.filter(x=>x.queries>0).length;
-
-  const dev = document.getElementById('devices'); dev.innerHTML='';
-  d.devices.forEach(x=>{
-    const label = x.name ? esc(x.name) : esc(x.ip);
-    const opts = GROUPS.map(g=>`<option value="${g}" ${g===x.group?'selected':''}>${g}</option>`).join('');
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td><span class="mono">${label}</span><br>
-        <span class="muted mono" style="font-size:11px">${esc(x.ip)}</span></td>
-      <td><select onchange="setGroup('${esc(x.ip)}',this.value)">${opts}</select></td>
-      <td>${x.queries}</td><td>${x.blocked||0}</td>`;
-    dev.appendChild(tr);
-  });
-
-  const dom = document.getElementById('domains'); dom.innerHTML='';
-  d.top_domains.forEach(x=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML = `<td class="mono">${esc(x.qname)}</td><td>${x.hits}</td><td>${x.blocked||0}</td>
-      <td><button class="block" onclick="blockDomain('${esc(x.qname)}')">block</button></td>`;
-    dom.appendChild(tr);
-  });
-
-  const feed = document.getElementById('feed'); feed.innerHTML='';
-  d.recent.forEach(x=>{
-    const tag = x.action==='blocked'
-      ? '<span class="tag blocked">blocked</span>'
-      : '<span class="tag allowed">allowed</span>';
-    const tr=document.createElement('tr');
-    tr.innerHTML = `<td class="muted mono" style="width:90px">${fmtTime(x.ts)}</td>
-      <td class="mono" style="width:120px">${esc(x.client_ip)}</td>
-      <td class="mono">${esc(x.qname)}</td><td style="width:90px">${tag}</td>`;
-    feed.appendChild(tr);
-  });
-}
-
-async function loadRules(){
-  const d = await (await fetch('/api/rules')).json();
-  const t = document.getElementById('rules'); t.innerHTML='';
-  d.rules.forEach(x=>{
-    const scope = x.scope==='global' ? 'everyone' : `${esc(x.scope)}: ${esc(x.target||'')}`;
-    const tr=document.createElement('tr');
-    tr.innerHTML = `<td><span class="tag ${x.action==='block'?'blocked':'allowed'}">${esc(x.action)}</span></td>
-      <td>${scope}</td><td class="mono">${esc(x.pattern)}</td>
-      <td><button onclick="delRule(${x.id})">remove</button></td>`;
-    t.appendChild(tr);
-  });
-}
-
-async function post(url, body){
-  await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-}
-async function setGroup(ip, group){ await post('/api/device',{ip,group}); load(); }
-async function blockDomain(domain){ await post('/api/rules',{scope:'global',pattern:domain,action:'block'}); loadRules(); }
-async function addRule(){
-  const action  = document.getElementById('r-action').value;
-  const scopeUI = document.getElementById('r-scope').value;
-  const pattern = document.getElementById('r-pattern').value.trim();
-  if(!pattern) return;
-  const body = {action, pattern, scope: scopeUI==='group'?'group':'global'};
-  if(scopeUI==='group') body.target='kids';
-  await post('/api/rules', body);
-  document.getElementById('r-pattern').value='';
-  loadRules();
-}
-async function delRule(id){ await fetch('/api/rules/'+id,{method:'DELETE'}); loadRules(); }
-
-load(); loadRules();
-setInterval(load, 3000);
-</script>
+<div id="app" hidden>
+  <header class="top">
+    <div class="top-inner">
+      <div class="brand"><span class="dot" id="health-dot"></span>Parental Gateway</div>
+      <nav class="tabs" id="tabs">
+        <a href="#overview" data-v="overview">Overview</a>
+        <a href="#devices" data-v="devices">Devices</a>
+        <a href="#activity" data-v="activity">Activity</a>
+        <a href="#alerts" data-v="alerts">Alerts<span class="count" id="alert-count" hidden></span></a>
+        <a href="#rules" data-v="rules">Rules &amp; schedules</a>
+        <a href="#system" data-v="system">System</a>
+      </nav>
+      <div class="top-right">
+        <span class="badge" id="mode-badge"></span>
+        <button class="small" id="logout">Sign out</button>
+      </div>
+    </div>
+  </header>
+  <main id="view"></main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/static/app.js"></script>
 </body>
 </html>

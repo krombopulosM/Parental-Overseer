@@ -1,93 +1,225 @@
 # Parental Gateway
 
-A home network parental-control system: it logs which domains each device looks
-up, filters them per device group, and shows everything in a browser dashboard.
-Runs the same on your Windows PC (for development) and on a Raspberry Pi (as the
-real gateway).
+A home-network filter for a family with kids who will actively try to get
+around it. A Raspberry Pi sits between your ISP router and your Wi-Fi, so all
+traffic passes through it. It:
 
-This is **Phase 1** of the plan — DNS-level filtering and visibility. See
-[Roadmap](#roadmap) for what comes next.
+- **filters** sites by category (adult, gambling, ads, VPN/proxy/bypass) per device group
+- **shows** which device went where, for how long, and how much data moved
+- **stops bypasses**: VPNs (including obfuscated ones like ProtonVPN Stealth and
+  Mullvad's udp2tcp / Shadowsocks / QUIC modes), encrypted DNS, proxies, Tor,
+  iCloud Private Relay, hard-coded IPs, disguised tunnels
+- is controlled from a **browser dashboard** with a login
 
-## What it does today
+It works at the level of **site names** (`youtube.com`), not individual pages,
+and it never breaks encryption: no certificates to install, no HTTPS
+downgrade. The site name is visible in every connection's handshake, and the
+gateway makes sure it stays visible.
 
-- **Filtering DNS resolver** — every device's DNS lookups go through it. Blocked
-  names return `NXDOMAIN`; everything else is forwarded upstream (Cloudflare by
-  default) and logged.
-- **Per-device groups** — devices start in `default` (unfiltered). Move a child's
-  device into the `kids` group from the dashboard to apply the kids' blocklists.
-- **Category blocklists** — `blocklists/ads.txt`, `blocklists/adult.txt`. Swap in
-  maintained lists (StevenBlack, Hagezi) for real coverage.
-- **Rules** — block or allow a specific domain for everyone or just the kids
-  group. An allow rule overrides a block, so you can whitelist one site inside a
-  blocked category.
-- **Dashboard** — lookups/blocked counts, per-device activity, top domains, a
-  live feed, and all the controls. Auto-refreshes every 3 seconds.
+The same code runs on your **Windows PC** (monitor mode, for development) and
+on the **Pi** (gateway mode, full enforcement).
 
-### What it does NOT do (by design)
+---
 
-DNS filtering sees **domains**, not pages — `youtube.com`, never which video.
-That's the honest limit of anything that doesn't break encryption. Per-page
-history needs device-level tools (Microsoft Family Safety, Family Link, Screen
-Time). Byte counts and connection duration come in Phase 2 (passive flow
-monitor), which reads the clear-text server name in the TLS handshake — still no
-decryption.
+## How the anti-bypass works
 
-## Setup
+Each layer works independently, so a VPN that slips past one hits the next.
+
+| Layer | What it does | What it stops |
+|---|---|---|
+| **The Pi is the router** | No other path to the internet | Static IPs, rogue gateways, ARP tricks |
+| **Unknown devices are filtered** | Only devices you mark as adults escape the filter | Randomised or spoofed MACs, new devices |
+| **DNS is forced through the Pi** | Every port-53 lookup is redirected to the Pi, whatever server it was meant for | "Just use 8.8.8.8" |
+| **Encrypted DNS blocked** | DoH/DoT resolvers blocked by name and IP, Firefox canary domain, port 853 | Browser "secure DNS", Android Private DNS |
+| **ECH disabled** | HTTPS/SVCB records stripped, so browsers never get Encrypted Client Hello keys | Hiding the site name in the handshake |
+| **Web ports only** | Kids get TCP 80/443 and small NTP packets; nothing else leaves | WireGuard, OpenVPN-UDP, IPsec, Tor ORPort, Shadowsocks, QUIC/HTTP3 (browsers fall back to TCP), Mullvad's QUIC obfuscation |
+| **Protocol conformance** | Port 443 must open with a real TLS handshake; port 80 must be real HTTP | Mullvad udp2tcp, OpenVPN-over-TCP, Shadowsocks/obfs4/VLESS, SSH-on-443, server-first protocols, HTTP CONNECT proxies |
+| **DNS consistency** | A kid's device may only connect to IPs the Pi's DNS gave it | Hard-coded VPN server IPs, VPN apps' built-in resolvers, Proton's "alternative routing", hosts-file entries, Reality-style disguises |
+| **Site-name checks** | The TLS name must be present, allowed, and match what DNS returned for that IP | No-SNI clients, domain fronting, `www.microsoft.com` disguises, ECH fronts, blocked sites on shared CDN IPs |
+| **VPN / DoH IP lists** | Mullvad relays, Proton servers, Tor relays, Cloudflare WARP, public resolvers (refreshed daily) | Direct connections to known VPN servers |
+| **Anti-evasion** | Handshakes split into tiny TCP segments or TLS records are reassembled; handshakes still unfinished after the inspection window are blocked | GoodbyeDPI-style fragmentation tricks |
+| **DNS tunnel detection** | Bursts of long random subdomains, NULL/ANY lookups | iodine, dnscat |
+| **Behaviour detector** | Scores long-lived, heavy connections from a device that has stopped making DNS lookups | Anything still hiding inside real TLS: Proton Stealth to a new IP, Trojan, Tor WebTunnel, a self-hosted VPN |
+| **Fail closed** | If the inspector stops, filtered devices lose web access until it's back | Crashing or killing the service |
+| **Tamper protection** | Password-protected dashboard reachable only from adults' devices; kids can't reach the ISP router's admin page | Unblocking themselves |
+
+For example, Mullvad has to get past three separate layers:
+1. Its API and relay IPs are blocked.
+2. Its WireGuard and QUIC modes need UDP, which kids don't get.
+3. Its udp2tcp and Shadowsocks modes aren't real TLS, so they fail the protocol check on 443.
+
+ProtonVPN Stealth *is* real TLS, but it connects to server IPs the Pi's DNS never handed out, and those IPs are on the Proton server list anyway.
+
+### Honest limits
+
+- **Mobile data / a friend's hotspot** skips your network entirely. Pair this
+  with the phone's own controls (Screen Time, Google Family Link).
+- **Domain, not page.** You'll see `youtube.com` (labelled "YouTube" in the
+  dashboard), not which video.
+- **A child who learns an adult device's MAC address** could impersonate it.
+  Give adults their own Wi-Fi network (SSID/VLAN) and set
+  `gateway.trusted_interfaces` so adult status only counts on that network.
+- **Physical access wins.** If a kid can plug into the ISP router directly, or
+  the ISP router's Wi-Fi is still on, the Pi is bypassed. Lock that down.
+- The behaviour detector is a heuristic. Every alert explains its score, and
+  "This is fine" exempts a destination.
+
+---
+
+## Run it on your PC (monitor mode)
+
+Monitor mode gives you DNS filtering, the full dashboard, and traffic
+accounting for the PC itself. Use it to develop and debug.
 
 ```bash
 cd parental-gateway
 python -m venv .venv
-# Windows:  .venv\Scripts\activate
-# Linux:    source .venv/bin/activate
-pip install -r requirements.txt
+.venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
+pip install -r requirements-dev.txt
+python run.py --update-lists      # first time: download the blocklists (~330k domains)
 python run.py
 ```
 
-Open the dashboard at **http://127.0.0.1:8080**.
+Open **http://127.0.0.1:8080** and choose a password; first-time setup is only
+allowed from the machine itself. For traffic accounting on Windows, install
+[Npcap](https://npcap.com) and run the terminal as administrator.
 
-By default the resolver listens on port **5353** (so it needs no admin rights
-while you develop). The OS can't be pointed at a non-standard DNS port, so test
-it directly:
+Test DNS filtering without touching your system settings:
+
+```
+nslookup -port=5353 pornhub.com 127.0.0.1
+nslookup -port=5353 protonvpn.com 127.0.0.1
+```
+
+Your PC appears as a device in the **quarantine** group (filtered). Move it to
+**adults** in the Devices page to see the difference.
+
+### Test the inspector on Windows with a packet capture
+
+Inline blocking needs the Pi, but you can see exactly what the Pi *would* do:
+
+1. Start a Wireshark capture.
+2. Connect with a VPN (or try any other bypass).
+3. Save the capture, then run:
 
 ```bash
-# blocked for the kids group, allowed otherwise:
-nslookup -port=5353 pornhub.com 127.0.0.1
-# normal site:
-nslookup -port=5353 bbc.co.uk 127.0.0.1
+python tools/replay.py my-capture.pcapng            # evaluated as the "kids" group
+python tools/replay.py my-capture.pcapng --group consoles
 ```
 
-Each lookup appears in the dashboard's live feed immediately. To see blocking
-take effect, move `127.0.0.1` into the `kids` group in the Devices panel, then
-re-run the first lookup — it returns `NXDOMAIN` and shows as blocked.
+It runs the same inspector the Pi uses and lists every blocked connection and why.
 
-### Using it to actually filter a machine
+---
 
-Set `dns.listen_port: 53` in `config.yaml` (needs admin on Windows / root on the
-Pi, and nothing else can be using port 53), restart, then point a device's DNS
-server at this machine's IP. On the Pi this becomes the network's resolver.
+## Deploy on the Raspberry Pi (gateway mode)
 
-## How it will deploy on the Raspberry Pi
-
-The Pi becomes the network's router, so there's no path around it:
+**Hardware:** a Raspberry Pi 4 or 5 (2 GB+), a USB 3 gigabit Ethernet adapter
+for the second port, and a Wi-Fi access point (or your current router set to
+*access point / bridge mode*).
 
 ```
-ISP router (bridge mode) ── Raspberry Pi (this software + routing) ── Wi-Fi AP ── devices
+ISP router ──eth0── Raspberry Pi ──eth1 (USB adapter)── Wi-Fi access point ── everyone
 ```
 
-Phase 3 adds the routing and lockdown (forcing all DNS through us, blocking DoH,
-QUIC and VPN escape routes, device quarantine). Until then this runs fine as a
-plain DNS filter on any machine.
+On the Pi (Raspberry Pi OS Bookworm, 64-bit):
 
-## Roadmap
+```bash
+git clone <this repo> && cd parental-gateway
+sudo ./deploy/setup-pi.sh
+# different interface names?   sudo WAN_IF=eth0 LAN_IF=eth1 ./deploy/setup-pi.sh
+```
 
-- **Phase 1 (done)** — filtering + logging DNS resolver, web dashboard.
-- **Phase 2** — passive flow monitor: SNI + bytes + duration per connection, so
-  you get "where, how long, how much data" without decrypting anything.
-- **Phase 3** — Pi gateway hardening: nftables routing, forced DNS, egress
-  lockdown (block DoH/DoT/QUIC/VPN), new-device quarantine, schedules.
+The script:
+- installs everything;
+- gives the LAN port `192.168.50.1` and runs DHCP on it;
+- creates a `parental-gateway` systemd service;
+- asks you for the dashboard password.
 
-## Note
+The dashboard is at **http://192.168.50.1:8080**.
 
-This is a separate project that currently lives inside the Mini-motorways repo
-folder only so it's easy to see and run. It is not part of that game and should
-move to its own repository before it goes on the Pi.
+Then:
+
+1. Set the access point to AP/bridge mode (no DHCP or NAT of its own).
+2. **Turn off the ISP router's Wi-Fi and change its admin password.**
+3. In **Devices**, move your own devices into **adults**. Put consoles in
+   **consoles** (they need UDP for online games). Everything else stays filtered.
+4. Optionally add internet-off times under **Rules & schedules**.
+
+Forwarding is off at boot and only switches on once the firewall is loaded,
+so there's never an unfiltered window. Machine-specific settings live in
+`config.local.yaml`, which the setup script writes and git ignores.
+
+---
+
+## The dashboard
+
+- **Overview:** devices online, lookups, blocks, bypass attempts and data
+  today; time per service; latest bypass attempts.
+- **Devices:** set groups, rename devices, see online time / data / blocks,
+  pause a device.
+- **Device page:** time and data per service (today and last 7 days), live
+  connections, lookups, bypass attempts.
+- **Activity:** every connection (device, site, destination, duration, ↓/↑
+  data, blocked or not) and every lookup.
+- **Alerts:** every bypass attempt in plain English, with *Dismiss* and *This is fine*.
+- **Rules & schedules:** block/allow sites for everyone or a group,
+  internet-off times, automatically blocked destinations.
+- **System:** component health, blocklist status, inspector counters, password.
+
+"Online time" counts minutes in which a device actually moved data with a
+service, so idle background connections don't inflate it.
+
+---
+
+## Groups (config.yaml)
+
+| Group | Filtered | UDP | DNS consistency | Use for |
+|---|---|---|---|---|
+| `adults` | no | yes | off | parents' devices |
+| `kids` | yes | **no** | enforce | phones, tablets, laptops |
+| `consoles` | yes | yes (VPN signatures still blocked) | log | game consoles |
+| `quarantine` | yes | no | enforce | every new/unknown device (default) |
+
+Categories, lists, detector thresholds and schedules are all in
+`config.yaml`, and each setting has a comment.
+
+---
+
+## Tests
+
+```bash
+pytest -q                               # 44 unit tests (parsers, inspector, resolver, detector, DB...)
+sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
+```
+
+The end-to-end test builds a miniature home network out of Linux network
+namespaces: two kids' devices, a parent's laptop, a console, the real gateway
+(nftables + inspector) and a fake internet with VPN servers, a DoH resolver,
+disguised tunnels and an ISP router. It then attempts every bypass above:
+**70/70 checks pass**, including killing the service and confirming kids'
+access fails closed while the parent is unaffected.
+
+## Layout
+
+```
+run.py                 entry point (--set-password, --update-lists)
+config.yaml            all settings, commented
+guardian/
+  resolver.py          filtering DNS server + DNS-tunnel detector
+  policy.py            groups, rules, categories
+  inspector.py         verdict engine (protocol conformance, SNI, DNS consistency, signatures)
+  protocols.py         TLS ClientHello / HTTP / VPN signature parsers, JA3/JA4
+  dnscache.py          which IPs each device was told about
+  flows/               traffic accounting: conntrack (Pi) / packet capture (PC)
+  detector.py          behavioural VPN/tunnel detection
+  gateway/             nftables ruleset, NFQUEUE runner
+  lists.py             blocklist + VPN-server list downloads
+  webapp.py, static/   dashboard
+deploy/                setup-pi.sh, systemd unit
+tools/replay.py        run the inspector over a Wireshark capture
+tests/                 unit tests + e2e/
+```
+
+> This project currently lives inside the Mini-motorways repository folder so
+> it's easy to reach from this session. It isn't part of that game; move it to
+> its own repository before putting it on the Pi.

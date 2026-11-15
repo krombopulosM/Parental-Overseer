@@ -1,0 +1,5 @@
+# Destinations a filtered device may connect to without first looking them up
+# through the gateway's DNS. Keep this short: every entry is a hole a VPN could
+# use if it happened to live there.
+# Apple (push notifications and some system services use cached/known IPs)
+17.0.0.0/8

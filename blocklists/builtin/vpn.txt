@@ -1,0 +1,51 @@
+# VPN providers: websites, account and API endpoints (subdomains included).
+# Blocking these stops VPN apps from logging in or fetching their server lists.
+# The downloaded Hagezi "doh-vpn-proxy-bypass" list adds thousands more.
+protonvpn.com
+protonvpn.ch
+vpn-api.proton.me
+mullvad.net
+nordvpn.com
+nordvpn.net
+nordaccount.com
+nordcdn.com
+expressvpn.com
+surfshark.com
+cyberghostvpn.com
+privateinternetaccess.com
+windscribe.com
+windscribe.net
+tunnelbear.com
+hide.me
+hotspotshield.com
+ipvanish.com
+purevpn.com
+vyprvpn.com
+atlasvpn.com
+privadovpn.com
+hidemyass.com
+hola.org
+betternet.co
+psiphon.ca
+psiphon3.com
+getlantern.org
+lantern.io
+ultrasurf.us
+urban-vpn.com
+veepn.com
+xvpn.io
+ivpn.net
+airvpn.org
+torguard.net
+strongvpn.com
+astrill.com
+perfect-privacy.com
+ovpn.com
+azirevpn.com
+vpn.mozilla.org
+# Brave VPN
+guardianapp.com
+# Opera's built-in browser VPN
+sec-tunnel.com
+# Cloudflare WARP (the "1.1.1.1" app)
+cloudflareclient.com

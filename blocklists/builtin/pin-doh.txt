@@ -1,0 +1,12 @@
+# DoH hostnames to resolve on each refresh; their IPs join the DoH IP list.
+dns.google
+dns.quad9.net
+doh.opendns.com
+dns.adguard-dns.com
+dns.nextdns.io
+doh.cleanbrowsing.org
+dns.mullvad.net
+freedns.controld.com
+doh.dns.sb
+dns0.eu
+cloudflare-dns.com

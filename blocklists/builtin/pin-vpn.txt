@@ -1,0 +1,9 @@
+# VPN API hostnames to resolve on each list refresh. Their IPs join the VPN IP
+# list, so an app with a hard-coded API address is still blocked. Only list
+# hosts on the provider's own servers; IPs inside shared CDN ranges
+# (cdn-guard.txt) are skipped automatically.
+api.mullvad.net
+api.protonvpn.ch
+api.windscribe.com
+api.nordvpn.com
+api.surfshark.com

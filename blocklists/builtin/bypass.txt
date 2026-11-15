@@ -1,0 +1,23 @@
+# Other ways around the filter.
+
+# Apple iCloud Private Relay - answering NXDOMAIN for these is Apple's
+# documented way for a network to switch Private Relay off.
+mask.icloud.com
+mask-h2.icloud.com
+
+# Tor Browser downloads, bridge distribution and Snowflake rendezvous
+torproject.org
+torproject.net
+
+# Web proxy sites ("browse any site through us")
+croxyproxy.com
+proxysite.com
+kproxy.com
+hidester.com
+proxyium.com
+blockaway.net
+
+# Public tunnelling services (expose a home PC to browse through it)
+ngrok.io
+ngrok.com
+ngrok-free.app

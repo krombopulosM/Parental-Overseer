@@ -1,4 +1,8 @@
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
 guardian.db
+guardian.db-*
+config.local.yaml
+blocklists/cache/

@@ -1,41 +1,67 @@
-"""Entry point: starts the filtering DNS server (background threads) and the
-web dashboard (foreground). Run with:  python run.py
+"""Parental Gateway entry point.
+
+    python run.py                    # start (mode comes from config.yaml / config.local.yaml)
+    python run.py --set-password     # set or reset the dashboard password
+    python run.py --update-lists     # download blocklists now and exit
+    python run.py --config other.yaml
 """
+import argparse
+import getpass
 import os
 import sys
-
-import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from guardian.db import DB
-from guardian.policy import Policy
-from guardian.resolver import start_dns
-from guardian.webapp import create_app
+from guardian.config import load_config, resolve_path  # noqa: E402
 
 
 def main():
-    with open(os.path.join(HERE, "config.yaml"), "r", encoding="utf-8") as fh:
-        cfg = yaml.safe_load(fh)
-    cfg["__base__"] = HERE
+    ap = argparse.ArgumentParser(description="Parental Gateway")
+    ap.add_argument("--config", default=os.path.join(HERE, "config.yaml"))
+    ap.add_argument("--set-password", action="store_true", help="set the dashboard password and exit")
+    ap.add_argument("--update-lists", action="store_true", help="download blocklists and exit")
+    ap.add_argument("--no-download", action="store_true", help="don't refresh blocklists on start")
+    args = ap.parse_args()
 
-    db_path = cfg.get("database", "guardian.db")
-    if not os.path.isabs(db_path):
-        db_path = os.path.join(HERE, db_path)
+    cfg = load_config(args.config)
 
-    db = DB(db_path)
-    policy = Policy(db, cfg)
-    start_dns(db, policy, cfg)
+    if args.set_password:
+        from guardian.auth import Auth
+        from guardian.db import DB
+        db = DB(resolve_path(cfg, cfg["database"]))
+        pw = os.environ.get("GUARDIAN_PASSWORD") or getpass.getpass("New dashboard password (8+ chars): ")
+        if not os.environ.get("GUARDIAN_PASSWORD") and getpass.getpass("Again: ") != pw:
+            sys.exit("passwords didn't match")
+        Auth(db).set_password(pw)
+        db.close()
+        print("password set")
+        return
+
+    if args.update_lists:
+        from guardian.lists import ListManager
+        lm = ListManager(cfg)
+        lm.update()
+        for k, v in lm.status.items():
+            print(f"{k:22} {v['entries']:>8}")
+        return
+
+    from guardian.app import Guardian
+    from guardian.webapp import create_app
+
+    g = Guardian(cfg)
+    g.start(download_lists=not args.no_download)
 
     import uvicorn
-    app = create_app(db, policy, cfg)
     web = cfg["web"]
-    print(f"[web] dashboard on http://{web['host']}:{web['port']}")
+    print(f"[web] dashboard on http://{web['host']}:{web['port']}  (mode: {cfg['mode']})")
     try:
-        uvicorn.run(app, host=web["host"], port=web["port"], log_level="warning")
+        uvicorn.run(create_app(g), host=web["host"], port=int(web["port"]), log_level="warning")
     except KeyboardInterrupt:
-        print("\n[exit] shutting down")
+        pass
+    finally:
+        print("[exit] shutting down")
+        g.stop()
 
 
 if __name__ == "__main__":

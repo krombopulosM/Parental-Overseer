@@ -1,93 +1,128 @@
-"""Decide whether a given client's DNS lookup should be allowed or blocked.
+"""Who is this device, which group is it in, and is this name allowed for it?
 
-Order of precedence:
-  1. explicit 'allow' rule  -> allow  (lets you whitelist one site inside a blocked category)
-  2. explicit 'block' rule   -> block
-  3. category blocklist for the device's group -> block
-  4. otherwise -> allow
+Decision order for a name:
+  1. an 'allow' rule (global / group / device)  -> allow  (whitelist inside a blocked category)
+  2. a 'block' rule                             -> block
+  3. a category blocklist enabled for the group -> block
+  4. otherwise                                  -> allow
 """
-import os
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass, field
+
+from .services import normalize_name
 
 
-class DomainMatcher:
-    """Set of domains; matches a name exactly or as a subdomain of an entry."""
+@dataclass
+class DeviceCtx:
+    device_id: str
+    ip: str
+    mac: str | None
+    group: str
+    g: dict = field(repr=False)
+    hostname: str | None = None
 
-    def __init__(self):
-        self._domains = set()
-
-    def add(self, domain):
-        d = domain.lower().strip().rstrip(".")
-        if d:
-            self._domains.add(d)
-
-    def load_file(self, path):
-        if not path or not os.path.exists(path):
-            return 0
-        n = 0
-        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                # accept "0.0.0.0 domain", "127.0.0.1 domain", or bare "domain"
-                domain = line.split()[-1]
-                if domain in ("localhost", "localhost.localdomain", "broadcasthost"):
-                    continue
-                self.add(domain)
-                n += 1
-        return n
-
-    def matches(self, qname):
-        d = qname.lower().rstrip(".")
-        if d in self._domains:
-            return True
-        labels = d.split(".")
-        for i in range(1, len(labels)):
-            if ".".join(labels[i:]) in self._domains:
-                return True
-        return False
+    @property
+    def filtered(self) -> bool:
+        return bool(self.g.get("filtered"))
 
 
+@dataclass
 class Decision:
-    __slots__ = ("block", "reason")
-
-    def __init__(self, block, reason):
-        self.block = block
-        self.reason = reason
+    block: bool
+    reason: str = ""
+    category: str | None = None
 
 
 class Policy:
-    def __init__(self, db, cfg):
+    def __init__(self, cfg: dict, db, lists, identity, alerts=None):
+        self.cfg = cfg
         self.db = db
-        self.categories = {}   # name -> (DomainMatcher, set(groups))
-        base = cfg.get("__base__", ".")
-        for name, spec in (cfg.get("categories") or {}).items():
-            matcher = DomainMatcher()
-            path = spec.get("file")
-            if path and not os.path.isabs(path):
-                path = os.path.join(base, path)
-            count = matcher.load_file(path)
-            groups = set(spec.get("groups") or [])
-            self.categories[name] = (matcher, groups)
-            print(f"[policy] category '{name}': {count} domains -> groups {sorted(groups)}")
+        self.lists = lists
+        self.identity = identity
+        self.alerts = alerts
+        self.forced_group: str | None = None   # replay tool / tests
+        self._rules: list[dict] = []
+        self._groups: dict[str, str | None] = {}
+        self._touched: dict[str, float] = {}
+        self._lock = threading.Lock()
+        self.reload()
 
-    def decide(self, client_ip, qname):
-        group = self.db.get_group(client_ip)
-        rules = self.db.rules_for(client_ip, group)
+    # ------------------------------------------------------------ state
+    def reload(self):
+        rules = self.db.list_rules() if self.db else []
+        groups = {d["device_id"]: d.get("group_name") for d in self.db.list_devices()} if self.db else {}
+        with self._lock:
+            self._rules = rules
+            self._groups = groups
 
-        for r in rules:                                    # 1. explicit allow
-            if r["action"] == "allow" and self._match(r["pattern"], qname):
-                return Decision(False, f"allow rule: {r['pattern']}")
-        for r in rules:                                    # 2. explicit block
-            if r["action"] == "block" and self._match(r["pattern"], qname):
-                return Decision(True, f"block rule: {r['pattern']}")
-        for name, (matcher, groups) in self.categories.items():   # 3. category
-            if group in groups and matcher.matches(qname):
-                return Decision(True, f"category: {name}")
-        return Decision(False, "")                         # 4. allow
+    def group_name(self, device_id: str) -> str:
+        if self.forced_group:
+            return self.forced_group
+        g = self._groups.get(device_id)
+        return g if g in self.cfg["groups"] else self.cfg["default_group"]
 
+    def set_device_group(self, device_id: str, group: str | None):
+        if group is not None and group not in self.cfg["groups"]:
+            raise ValueError(f"unknown group {group}")
+        self.db.update_device(device_id, group=group, set_group=True)
+        self.reload()
+
+    # ------------------------------------------------------------ identity
+    def context(self, ip: str, mac: str | None = None) -> DeviceCtx:
+        if mac:
+            self.identity.learn(ip, mac)
+            device_id, mac = mac.lower(), mac.lower()
+        else:
+            device_id, mac = self.identity.device_id_for(ip)
+        group = self.group_name(device_id)
+        ctx = DeviceCtx(device_id, ip, mac, group, self.cfg["groups"][group],
+                        self.identity.hostname_for(mac))
+        self._touch(ctx)
+        return ctx
+
+    def _touch(self, ctx: DeviceCtx):
+        if self.db is None:
+            return
+        now = time.time()
+        last = self._touched.get(ctx.device_id)
+        if last is not None and now - last < 60:
+            return
+        self._touched[ctx.device_id] = now
+        if ctx.mac and ctx.ip != ctx.device_id and ctx.ip in self._groups:
+            if self.db.adopt_ip_device(ctx.ip, ctx.mac):
+                self.reload()
+        is_new = ctx.device_id not in self._groups
+        self.db.upsert_device_seen(ctx.device_id, ctx.mac, ctx.ip, ctx.hostname)
+        if is_new:
+            with self._lock:
+                self._groups.setdefault(ctx.device_id, None)
+            if self.alerts:
+                self.alerts.emit("new_device", device_id=ctx.device_id, client_ip=ctx.ip,
+                                 action="placed in " + ctx.group,
+                                 detail=f"{ctx.hostname or ctx.mac or ctx.ip} joined and was put in "
+                                        f"the '{ctx.group}' group until you assign it")
+
+    # ------------------------------------------------------------ decisions
     @staticmethod
-    def _match(pattern, qname):
-        d = qname.lower().rstrip(".")
-        p = pattern.lower().rstrip(".")
-        return d == p or d.endswith("." + p)
+    def _match(pattern: str, name: str) -> bool:
+        return name == pattern or name.endswith("." + pattern)
+
+    def decide(self, ctx: DeviceCtx, name: str) -> Decision:
+        name = normalize_name(name) or ""
+        rules = self._rules
+        mine = [r for r in rules if r["scope"] == "global"
+                or (r["scope"] == "group" and r["target"] == ctx.group)
+                or (r["scope"] == "device" and r["target"] == ctx.device_id)]
+        for r in mine:
+            if r["action"] == "allow" and self._match(r["pattern"], name):
+                return Decision(False, f"allow rule: {r['pattern']}")
+        for r in mine:
+            if r["action"] == "block" and self._match(r["pattern"], name):
+                return Decision(True, f"block rule: {r['pattern']}", "rule")
+        cat = self.lists.category_match(name, ctx.g.get("categories") or [])
+        if cat:
+            return Decision(True, f"category: {cat}", cat)
+        return Decision(False, "")

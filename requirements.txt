@@ -2,3 +2,5 @@ dnslib>=0.9.24
 fastapi>=0.110
 uvicorn>=0.29
 pyyaml>=6.0
+# packet capture for monitor mode + the replay tool (Windows also needs Npcap: https://npcap.com)
+scapy>=2.5

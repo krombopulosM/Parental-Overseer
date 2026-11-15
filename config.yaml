@@ -1,23 +1,136 @@
-# Parental Gateway configuration
+# Parental Gateway configuration.
+# Machine-specific overrides go in config.local.yaml next to this file (same
+# layout, deep-merged on top). deploy/setup-pi.sh writes one for the Pi.
+
+# monitor = DNS filtering + passive traffic monitoring. Runs anywhere (your PC).
+# gateway = the Raspberry Pi is the router: full enforcement (Linux, root).
+mode: monitor
+
 dns:
   listen_host: 0.0.0.0
-  listen_port: 5353        # 53 on the Raspberry Pi; 5353 avoids needing admin on your PC
-  upstream_host: 1.1.1.1   # where we forward allowed lookups
+  listen_port: 5353              # 53 on the Pi (setup-pi.sh sets this)
+  upstreams: ["1.1.1.1", "9.9.9.9"]
   upstream_port: 53
+  # Remove HTTPS/SVCB records so browsers never get Encrypted Client Hello
+  # keys - this keeps the real site name visible in every TLS handshake.
+  strip_https_records: "filtered"        # filtered | all | off
+  block_qtypes_filtered: ["NULL", "ANY"] # record types only DNS-tunnel tools use
+  tunnel_detection:
+    enabled: true
+    window: 300            # seconds
+    unique_names: 120      # long random subdomains of one domain in the window
+    min_label_len: 24
+    block_hours: 24
 
 web:
-  host: 127.0.0.1          # dashboard only reachable from this machine; set 0.0.0.0 on the Pi
+  host: 127.0.0.1          # 0.0.0.0 on the Pi (setup-pi.sh sets this)
   port: 8080
 
 database: guardian.db
+retention_days: 30
 
-# Category blocklists and which device groups they apply to.
-# Devices start in the 'default' group (unfiltered). Move a child's device
-# into the 'kids' group from the dashboard to apply the kids' blocklists.
+# ---------------------------------------------------------------- groups
+# Every device belongs to one group. New/unknown devices land in default_group,
+# so a kid who randomises their MAC address or brings a new device gets the
+# strictest policy until you approve it in the dashboard.
+groups:
+  adults:
+    filtered: false
+    categories: [ads]
+  kids:
+    filtered: true
+    categories: [ads, adult, gambling, bypass]
+    allow_udp: false          # web only: blocks WireGuard, OpenVPN-UDP, IPsec, QUIC, Shadowsocks-UDP...
+    require_sni: true         # encrypted connections must name the site they're going to
+    dns_consistency: "enforce"  # only connect to IPs the gateway's DNS handed out (enforce | log | off)
+  consoles:                   # games need UDP; VPN signatures + IP lists still apply
+    filtered: true
+    categories: [ads, adult, gambling, bypass]
+    allow_udp: true
+    require_sni: true
+    dns_consistency: "log"
+  quarantine:
+    filtered: true
+    categories: [ads, adult, gambling, bypass]
+    allow_udp: false
+    require_sni: true
+    dns_consistency: "enforce"
+default_group: quarantine
+
+# ---------------------------------------------------------------- domain categories
 categories:
   ads:
-    file: blocklists/ads.txt
-    groups: [kids, default]
+    files: [blocklists/builtin/ads.txt]
+    urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/multi-onlydomains.txt]
   adult:
-    file: blocklists/adult.txt
-    groups: [kids]
+    files: [blocklists/builtin/adult.txt]
+    urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt]
+  gambling:
+    urls: [https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts]
+  bypass:                     # VPNs, proxies, encrypted-DNS resolvers, Tor, private relays
+    files: [blocklists/builtin/vpn.txt, blocklists/builtin/doh.txt, blocklists/builtin/bypass.txt]
+    urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt]
+
+# ---------------------------------------------------------------- destination IP lists
+# Filtered devices can't connect to these at all (gateway mode).
+ip_lists:
+  vpn:
+    files: [blocklists/builtin/vpn-ips.txt]
+    sources:
+      - {type: mullvad, url: "https://api.mullvad.net/www/relays/all/"}
+      - {type: proton,  url: "https://api.protonvpn.ch/vpn/logicals"}
+      - {type: tor,     url: "https://onionoo.torproject.org/details?type=relay&running=true&fields=or_addresses"}
+      # Whole address ranges of VPN hosting companies. Catches more VPNs, but
+      # those companies also host ordinary websites, so expect some false
+      # positives. Uncomment if you accept that trade-off.
+      # - {type: cidr, url: "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt"}
+    pin_domains: blocklists/builtin/pin-vpn.txt
+  doh:
+    files: [blocklists/builtin/doh-ips.txt]
+    pin_domains: blocklists/builtin/pin-doh.txt
+lists_refresh_hours: 24
+
+# ---------------------------------------------------------------- enforcement (gateway mode)
+enforcement:
+  consistency_grace: 21600     # how long (s) an IP from a DNS answer stays valid for that device
+  consistency_exempt: blocklists/builtin/consistency-exempt.txt
+  ech_public_names: [cloudflare-ech.com]
+  fail_open: false             # false = if the inspector stops, filtered devices lose web access (safer)
+  queue_backend: auto          # auto | nft | xt
+  inspect_packets: 10          # first N packets of each web connection are inspected
+
+# ---------------------------------------------------------------- VPN-behaviour detector
+detector:
+  enabled: true
+  interval: 30
+  min_duration: 300            # a connection must be this long-lived (s) ...
+  min_bytes: 10000000          # ... and carry this much data to be scored
+  window: 300
+  dns_silence_max_queries: 3   # a device tunnelling its DNS stops asking us
+  silence_min_bytes: 5000000
+  threshold: 70
+  block_hours: 24
+  learning_days: 3             # "never seen before" signal only after this
+  exempt_services: [youtube, netflix, twitch, disneyplus, primevideo, spotify, steam, xbox,
+                    playstation, nintendo, apple, microsoft, google, epicgames]
+
+# ---------------------------------------------------------------- traffic accounting
+flows:
+  poll_interval: 5
+  active_minute_bytes: 10000   # a minute counts as "in use" above this much traffic
+  sniffer_interface: null      # monitor mode: capture interface (null = scapy default)
+  log_trusted_devices: true
+
+# ---------------------------------------------------------------- Raspberry Pi router
+gateway:
+  wan_interface: eth0          # to your ISP router
+  lan_interfaces: [eth1]       # to your Wi-Fi access point / switch
+  lan_ip: 192.168.50.1
+  lan_subnets: [192.168.50.0/24]
+  trusted_interfaces: []       # e.g. [eth1.10] if adults have their own SSID/VLAN
+  admin_only_dashboard: true   # dashboard + SSH reachable only from admin_groups devices
+  admin_groups: [adults]
+  allow_wan_ssh: true          # SSH from the ISP-router side (handy during setup)
+  ipv6: false                  # no IPv6 path through the gateway = nothing to bypass via IPv6
+  dhcp_leases: /var/lib/misc/dnsmasq.leases
+  remove_rules_on_exit: false  # keep blocking even if the service is stopped

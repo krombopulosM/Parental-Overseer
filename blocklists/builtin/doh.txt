@@ -1,0 +1,37 @@
+# Encrypted DNS (DoH / DoT / DoQ) resolvers. If a device can reach one of these
+# it can look up blocked sites without asking the gateway.
+dns.google
+dns64.dns.google
+cloudflare-dns.com
+one.one.one.one
+1dot1dot1dot1.cloudflare-dns.com
+dns.quad9.net
+dns9.quad9.net
+dns10.quad9.net
+dns11.quad9.net
+doh.opendns.com
+dns.opendns.com
+doh.familyshield.opendns.com
+dns.adguard.com
+dns.adguard-dns.com
+adguard-dns.io
+nextdns.io
+doh.cleanbrowsing.org
+dns.mullvad.net
+doh.mullvad.net
+controld.com
+doh.dns.sb
+dns.sb
+dns0.eu
+doh.libredns.gr
+dns.switch.ch
+dns.digitale-gesellschaft.ch
+doh.ffmuc.net
+doh.xfinity.com
+dns.alidns.com
+doh.pub
+doh.applied-privacy.net
+odvr.nic.cz
+dns.njal.la
+dnsforge.de
+ordns.he.net

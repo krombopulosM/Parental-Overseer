@@ -1,0 +1,17 @@
+[Unit]
+Description=Parental Gateway (DNS filter, firewall, traffic inspector, dashboard)
+After=network-online.target dnsmasq.service
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/parental-gateway
+ExecStart=/opt/parental-gateway/.venv/bin/python /opt/parental-gateway/run.py
+Restart=always
+RestartSec=2
+# The firewall stays in place while the service restarts, and new web
+# connections from filtered devices wait (fail closed) until it's back.
+User=root
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

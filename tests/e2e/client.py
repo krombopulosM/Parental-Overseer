@@ -1,0 +1,289 @@
+"""Bypass attempts, run from inside a LAN namespace (kid / parent / console).
+Each check prints one JSON line: {"name", "ok", "got"}.
+
+    python client.py <suite>
+"""
+import json
+import os
+import socket
+import ssl
+import struct
+import sys
+import time
+
+from dnslib import DNSRecord
+
+GW = "10.50.0.1"
+
+
+def dns(name, server=GW, qtype="A"):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(3)
+    try:
+        s.sendto(DNSRecord.question(name, qtype).pack(), (server, 53))
+        r = DNSRecord.parse(s.recvfrom(4096)[0])
+        return r.header.rcode, [str(a.rdata) for a in r.rr]
+    except socket.timeout:
+        return "timeout", []
+    finally:
+        s.close()
+
+
+def tls(ip, sni, port=443, payload=b"GET", timeout=3):
+    """'ok' (handshake + reply), 'reset', 'refused', 'timeout' or an error label."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    raw = socket.socket()
+    raw.settimeout(timeout)
+    try:
+        raw.connect((ip, port))
+        s = ctx.wrap_socket(raw, server_hostname=sni)
+        s.sendall(payload)
+        data = s.recv(100)
+        return "ok" if data else "closed"
+    except ConnectionResetError:
+        return "reset"
+    except ConnectionRefusedError:
+        return "refused"
+    except (socket.timeout, TimeoutError):
+        return "timeout"
+    except ssl.SSLError as e:
+        return "reset" if "EOF" in str(e) or "reset" in str(e).lower() else f"ssl:{e.reason}"
+    except OSError as e:
+        return f"os:{e.errno}"
+    finally:
+        raw.close()
+
+
+def raw_tcp(ip, port, data, timeout=3, chunks=None):
+    s = socket.socket()
+    s.settimeout(timeout)
+    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    try:
+        s.connect((ip, port))
+        for part in (chunks or [data]):
+            s.send(part)
+            if chunks:
+                time.sleep(0.05)
+        got = s.recv(65536)
+        return "echo" if got else "closed"
+    except ConnectionResetError:
+        return "reset"
+    except ConnectionRefusedError:
+        return "refused"
+    except (socket.timeout, TimeoutError):
+        return "timeout"
+    except OSError as e:
+        return f"os:{e.errno}"
+    finally:
+        s.close()
+
+
+def http(ip, host, method="GET", target="/"):
+    req = f"{method} {target} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode()
+    s = socket.socket()
+    s.settimeout(3)
+    try:
+        s.connect((ip, 80))
+        s.sendall(req)
+        data = s.recv(100)
+        return "200" if b" 200 " in data else ("closed" if not data else "other")
+    except ConnectionResetError:
+        return "reset"
+    except (socket.timeout, TimeoutError):
+        return "timeout"
+    except OSError as e:
+        return f"os:{e.errno}"
+    finally:
+        s.close()
+
+
+def udp(ip, port, payload, timeout=2):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(payload, (ip, port))
+        return "echo" if s.recvfrom(65536)[0] == payload else "other"
+    except socket.timeout:
+        return "timeout"
+    finally:
+        s.close()
+
+
+def client_hello(sni):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    out = ssl.MemoryBIO()
+    obj = ctx.wrap_bio(ssl.MemoryBIO(), out, server_hostname=sni)
+    try:
+        obj.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    return out.read()
+
+
+def split_records(hello, at):
+    body = hello[5:]
+    hdr = hello[:3]
+    return hdr + struct.pack("!H", at) + body[:at] + hdr + struct.pack("!H", len(body) - at) + body[at:]
+
+
+WG_INIT = b"\x01\x00\x00\x00" + os.urandom(144)
+QUIC = bytes([0xC3]) + struct.pack("!I", 1) + os.urandom(1200)
+
+
+class OneOf:
+    def __init__(self, *vals):
+        self.vals = [_norm(v) for v in vals]
+
+
+def _norm(v):
+    return json.loads(json.dumps(v))
+
+
+def check(name, got, want):
+    g = _norm(got)
+    ok = g in want.vals if isinstance(want, OneOf) else g == _norm(want)
+    print(json.dumps({"name": name, "ok": ok, "got": g,
+                      "want": want.vals if isinstance(want, OneOf) else _norm(want)}), flush=True)
+
+
+def suite_kid():
+    RESET, DROPPED = "reset", "timeout"
+    # Order matters: the direct-IP test runs before vps.test is ever looked up.
+    check("direct IP to a VPS (no DNS lookup) -> TCP reset at connect", tls("198.51.100.77", "vps.test"), "refused")
+    check("DNS: normal site resolves", dns("site.test"), (0, ["198.51.100.10"]))
+    check("DNS: adult site blocked", dns("adult-site.test")[0], 3)
+    check("DNS: VPN provider domain blocked", dns("protonvpn.com")[0], 3)
+    check("DNS: asking 8.8.8.8 directly is redirected and still filtered", dns("adult-site.test", "8.8.8.8")[0], 3)
+    check("DNS: redirected query still answers normal sites", dns("site.test", "8.8.8.8")[1], ["198.51.100.10"])
+    check("DNS: Firefox DoH canary", dns("use-application-dns.net")[0], 3)
+    check("DNS: HTTPS records stripped (no ECH keys)", dns("site.test", qtype="HTTPS"), (0, []))
+    check("DNS: NULL records refused (DNS tunnel tools)", dns("x.site.test", qtype="NULL")[0], 5)
+    check("HTTPS to an allowed site works", tls("198.51.100.10", "site.test"), "ok")
+    dns("shared-cdn.test")
+    check("blocked site behind a shared IP (hosts-file trick)", tls("198.51.100.10", "adult-site.test"), RESET)
+    dns("vps.test")
+    check("Reality-style handshake pretending to be microsoft.com", tls("198.51.100.77", "www.microsoft.com"), RESET)
+    check("TLS without a server name", tls("198.51.100.77", None), RESET)
+    dns("cloudflare-ech.com")
+    check("Encrypted Client Hello front", tls("198.51.100.10", "cloudflare-ech.com"), RESET)
+    dns("vpn-server.test")
+    check("known VPN server IP (Proton/Mullvad list) -> silently dropped", tls("198.51.100.66", "vpn-server.test"), DROPPED)
+    check("public DoH resolver 9.9.9.9 -> silently dropped", tls("9.9.9.9", "dns.quad9.net"), DROPPED)
+    dns("raw.test")
+    frame = struct.pack("!H", 148) + WG_INIT
+    check("Mullvad udp2tcp (WireGuard framed in TCP/443)", raw_tcp("198.51.100.80", 443, frame), RESET)
+    check("Shadowsocks-style random bytes on 443", raw_tcp("198.51.100.80", 443, b"\x8a" + os.urandom(299)), RESET)
+    check("OpenVPN over TCP 443", raw_tcp("198.51.100.80", 443, struct.pack("!H", 14) + b"\x38" + os.urandom(13)), RESET)
+    check("SSH on port 443", raw_tcp("198.51.100.80", 443, b"SSH-2.0-OpenSSH_9.6\r\n"), RESET)
+    hello = client_hello("site.test")
+    check("ClientHello dribbled in 1-byte TCP segments (DPI evasion)",
+          raw_tcp("198.51.100.10", 443, None, chunks=[hello[i:i + 1] for i in range(30)] + [hello[30:]]), RESET)
+    dns("shared-cdn.test")
+    check("blocked site hidden by TLS record fragmentation",
+          raw_tcp("198.51.100.10", 443, split_records(client_hello("adult-site.test"), 4)), RESET)
+    check("control: fragmented records for an allowed site still work",
+          raw_tcp("198.51.100.10", 443, split_records(client_hello("site.test"), 4)), "echo")
+    dns("serverfirst.test")
+    check("server-speaks-first protocol on 443 (SSH/VPN-like)", _server_first(), RESET)
+    check("plain HTTP to an allowed site", http("198.51.100.10", "site.test"), "200")
+    check("HTTP CONNECT proxy tunnel", http("198.51.100.10", "vps.test", "CONNECT", "vps.test:443"), RESET)
+    check("HTTP Host header for a blocked site", http("198.51.100.10", "adult-site.test"), RESET)
+    check("WireGuard handshake (UDP 51820)", udp("198.51.100.77", 51820, WG_INIT), DROPPED)
+    check("QUIC / HTTP3 (UDP 443)", udp("198.51.100.77", 443, QUIC), DROPPED)
+    check("other UDP (games) not allowed for kids", udp("198.51.100.77", 3074, b"game"), DROPPED)
+    check("OpenVPN port TCP 1194", raw_tcp("198.51.100.77", 1194, b"x"), DROPPED)
+    check("ISP router admin page (192.168.1.1)", http("192.168.1.1", "192.168.1.1"), DROPPED)
+    check("dashboard from a kid's device", raw_tcp(GW, 8080, b"GET / HTTP/1.0\r\n\r\n"), DROPPED)
+
+
+def _server_first():
+    s = socket.socket()
+    s.settimeout(4)
+    got = 0
+    try:
+        s.connect(("198.51.100.78", 443))
+        while True:
+            d = s.recv(65536)
+            if not d:
+                return "closed"
+            got += len(d)
+            if got >= 32 * 4096:
+                return "ok"
+    except ConnectionResetError:
+        return "reset"
+    except (socket.timeout, TimeoutError):
+        return "timeout"
+    finally:
+        s.close()
+
+
+def suite_parent():
+    check("parent: direct IP without DNS works", tls("198.51.100.77", "vps.test"), "ok")
+    check("parent: WireGuard allowed", udp("198.51.100.77", 51820, WG_INIT), "echo")
+    check("parent: ISP router admin page", http("192.168.1.1", "192.168.1.1"), "200")
+    check("parent: dashboard reachable", raw_tcp(GW, 8080, b"GET / HTTP/1.0\r\n\r\n"), "echo")
+
+
+def suite_console():
+    check("console: game UDP allowed", udp("198.51.100.77", 3074, b"game-packet"), "echo")
+    check("console: WireGuard still blocked", udp("198.51.100.77", 51820, WG_INIT), "timeout")
+    check("console: QUIC still blocked", udp("198.51.100.77", 443, QUIC), "timeout")
+
+
+def suite_kid_basic():
+    dns("site.test")
+    check("kid: HTTPS to allowed site", tls("198.51.100.10", "site.test"), "ok")
+
+
+def suite_kid_paused():
+    check("paused: DNS refused", dns("site.test")[0], 3)
+    check("paused: HTTPS blocked", tls("198.51.100.10", "site.test"), OneOf("reset", "refused", "timeout", "os:113"))
+
+
+def suite_tunnel():
+    """A real TLS connection to a domain resolved through our DNS (passes every
+    handshake check) that then behaves like a VPN: long-lived, heavy, and the
+    device makes no further DNS lookups."""
+    dns("tunnel.test")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    raw = socket.create_connection(("198.51.100.79", 443), timeout=5)
+    s = ctx.wrap_socket(raw, server_hostname="tunnel.test")
+    s.sendall(b"BULK")
+    start, got, result = time.time(), 0, "never-blocked"
+    s.settimeout(2)
+    while time.time() - start < 45:
+        try:
+            d = s.recv(65536)
+            if not d:
+                result = "closed"
+                break
+            got += len(d)
+        except (socket.timeout, TimeoutError):
+            result = "stalled"
+            break
+        except (ConnectionResetError, ssl.SSLError, OSError):
+            result = "reset"
+            break
+    elapsed = round(time.time() - start, 1)
+    print(json.dumps({"name": f"tunnel cut off after {elapsed}s / {got // 1_000_000} MB", "ok": result in ("stalled", "reset", "closed") and elapsed > 4,
+                      "got": result, "want": ["stalled", "reset"]}), flush=True)
+    check("tunnel host blocked for new connections", tls("198.51.100.79", "tunnel.test"), OneOf("timeout", "reset", "refused"))
+
+
+def suite_kid_failclosed():
+    dns("site.test")
+    check("inspector down: kid's web access fails closed", tls("198.51.100.10", "site.test"), OneOf("timeout", "reset", "refused"))
+
+
+def suite_parent_failclosed():
+    check("inspector down: parent unaffected", tls("198.51.100.77", "vps.test"), "ok")
+
+
+if __name__ == "__main__":
+    globals()[f"suite_{sys.argv[1]}"]()

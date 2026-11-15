@@ -1,0 +1,2 @@
+# Raspberry Pi / Linux gateway mode only (needs: apt install libnetfilter-queue-dev)
+netfilterqueue>=1.1

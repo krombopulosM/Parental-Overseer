@@ -1,0 +1,10 @@
+# Destination IPs blocked for filtered devices (one IP or CIDR per line).
+# Downloaded server lists (Mullvad relays, Proton servers, Tor relays) are added
+# automatically; add anything extra you find here.
+
+# Cloudflare WARP (1.1.1.1 app) tunnel endpoints
+162.159.192.0/24
+162.159.193.0/24
+162.159.195.0/24
+2606:4700:d0::/48
+2606:4700:d1::/48
