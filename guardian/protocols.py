@@ -426,3 +426,20 @@ def identify_tcp_stream(buf: bytes) -> str:
     if len(sample) >= 32 and entropy(sample) / math.log2(min(len(sample), 256)) > 0.85:
         return "encrypted/obfuscated stream (Shadowsocks, obfs4, VLESS-style)"
     return "unrecognised protocol"
+
+
+# ---------------------------------------------------------------- Tor
+_TOR_SNI = __import__("re").compile(r"^www\.([a-z2-7]{8,20})\.(com|net)$")
+
+
+def looks_like_tor_sni(sni: str | None) -> bool:
+    """Tor's link handshakes use a made-up name: 'www.' + 8-20 random base32
+    characters + '.com'/'.net'. Real sites rarely look like that, and the
+    gateway also requires that the name was never looked up in DNS."""
+    m = _TOR_SNI.match(sni or "")
+    if not m:
+        return False
+    label = m.group(1)
+    vowels = sum(c in "aeiou" for c in label)
+    digits = sum(c.isdigit() for c in label)
+    return digits >= 1 or vowels / len(label) < 0.2

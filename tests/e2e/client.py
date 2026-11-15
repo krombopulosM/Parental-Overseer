@@ -490,5 +490,102 @@ def suite_parent_adult():
     check("parent: Google is not rewritten", _names(dns("www.google.com")[1]), ["198.51.100.84"])
     check("parent: name heuristics don't apply to adults", dns("hotxxxvideos.test")[0], 0)
 
+
+# ---------------------------------------------------------------- VPN / Tor technology (unlisted servers)
+def vpn_app_ctx():
+    """A 'VPN app' with its own TLS library: a different fingerprint from a browser."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    ctx.set_ciphers("ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256")
+    return ctx
+
+
+def tls_with(ctx, ip, sni, payload=b"GET", timeout=3):
+    raw = socket.socket()
+    raw.settimeout(timeout)
+    try:
+        raw.connect((ip, 443))
+        s = ctx.wrap_socket(raw, server_hostname=sni)
+        s.sendall(payload)
+        return "ok" if s.recv(100) else "closed"
+    except ConnectionResetError:
+        return "reset"
+    except ConnectionRefusedError:
+        return "refused"
+    except (socket.timeout, TimeoutError):
+        return "timeout"
+    except ssl.SSLError as e:
+        return "reset" if "EOF" in str(e) or "reset" in str(e).lower() else f"ssl:{e.reason}"
+    except OSError as e:
+        return f"os:{e.errno}"
+    finally:
+        raw.close()
+
+
+def stream_with(ctx, ip, sni, seconds):
+    got, start = 0, time.time()
+    try:
+        raw = socket.create_connection((ip, 443), timeout=5)
+        s = ctx.wrap_socket(raw, server_hostname=sni)
+        s.sendall(b"BULK")
+        s.settimeout(3)
+        while time.time() - start < seconds:
+            d = s.recv(65536)
+            if not d:
+                return "closed", got
+            got += len(d)
+        return "complete", got
+    except (socket.timeout, TimeoutError):
+        return "stalled", got
+    except (ConnectionResetError, ConnectionRefusedError, ssl.SSLError, OSError):
+        return "reset", got
+
+
+def suite_kid2_vpn_app():
+    """A VPN app nobody has listed, on a server that didn't exist yesterday."""
+    dns("relay-one.unknown.test")
+    t0 = time.time()
+    res, got = stream_with(vpn_app_ctx(), "198.51.100.86", "relay-one.unknown.test", 40)
+    check(f"unlisted VPN server caught by its behaviour after {time.time() - t0:.0f}s / {got / 1e6:.0f} MB",
+          res, OneOf("stalled", "reset", "closed"))
+    time.sleep(1)
+    dns("relay-two.unknown.test")
+    check("same VPN app on ANOTHER brand-new server: blocked at the handshake",
+          tls_with(vpn_app_ctx(), "198.51.100.88", "relay-two.unknown.test"), "reset")
+    check("a normal browser to that same new server still works", tls("198.51.100.88", "relay-two.unknown.test"), "ok")
+
+
+def suite_kid_tor():
+    check("listed Tor relay: dropped", tls("198.51.100.87", "www.k3jd6a2bq7x.com"), "timeout")
+    check("unlisted Tor relay on its own port 9001: dropped", raw_tcp("198.51.100.89", 9001, b"x"), "timeout")
+    check("unlisted Tor relay on 443 (never looked up in DNS): refused",
+          tls("198.51.100.89", "www.qzx4mt7wpl.com"), "refused")
+
+
+def suite_console_tor():
+    check("console (DNS check only reports): Tor handshake shape still blocked",
+          tls("198.51.100.89", "www.qzx4mt7wpl.com"), "reset")
+
+
+def suite_kid_unknown_dest():
+    """A WebTunnel / CDN-routed tunnel to a real domain with genuine TLS, and the
+    device keeps its DNS chatter going so it doesn't look 'silent'."""
+    import threading
+    stop = threading.Event()
+
+    def chatter():
+        while not stop.is_set():
+            dns("site.test")
+            time.sleep(1.5)
+    threading.Thread(target=chatter, daemon=True).start()
+    dns("files.unknown-host.test")
+    t0 = time.time()
+    res, got = _tls_stream("198.51.100.90", "files.unknown-host.test", b"BULK", 45)
+    stop.set()
+    check(f"heavy tunnel to an unknown domain cut after {time.time() - t0:.0f}s / {got / 1e6:.0f} MB",
+          res, OneOf("stalled", "reset", "closed"))
+    check("that destination held until reviewed", tls("198.51.100.90", "files.unknown-host.test"), "reset")
+
 if __name__ == "__main__":
     globals()[f"suite_{sys.argv[1]}"]()

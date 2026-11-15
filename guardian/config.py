@@ -45,6 +45,10 @@ DEFAULTS: dict = {
         "protocol_exempt_domains": ["whatsapp.net", "whatsapp.com"],
     },
     "torrent": {"fanout_peers": 25, "window": 60},
+    "reputation": {"popularity_urls": [], "popularity_files": [], "popular_top": 200000, "familiar_days": 60},
+    "vpn": {"unknown_destinations": "review", "unknown_min_bytes": 15_000_000, "unknown_min_seconds": 600,
+            "learn_fingerprints": True},
+    "escalation": {"window": 600, "min_techniques": 3, "min_confidence": 70, "pause_minutes": 15},
     "adult": {
         "mode": "strict", "safesearch": True, "youtube_restricted": "strict",
         "family_dns": ["1.1.1.3", "1.0.0.3"], "family_blocked_answers": ["0.0.0.0", "::"],
@@ -69,6 +73,7 @@ DEFAULTS: dict = {
         "enabled": True, "interval": 30, "min_duration": 300, "min_bytes": 10_000_000,
         "window": 300, "dns_silence_max_queries": 3, "silence_min_bytes": 5_000_000,
         "threshold": 70, "block_hours": 24, "learning_days": 3, "exempt_services": [],
+        "unknown_min_duration": 60, "unknown_min_bytes": 2_000_000,
     },
     "flows": {
         "poll_interval": 2, "active_minute_bytes": 10_000, "sniffer_interface": None,

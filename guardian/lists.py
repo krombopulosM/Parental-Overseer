@@ -8,6 +8,7 @@ pauses during an update. If a download fails the last good copy keeps working.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import threading
@@ -114,6 +115,7 @@ class ListManager:
         self.exempt = IPSet()
         self.cdn_guard = IPSet()
         self.status: dict[str, dict] = {}
+        self.popular: set[str] = set()      # registrable domains of the world's most-visited sites
         self.version = 0
         self.last_update = 0.0
         self.updating = False
@@ -188,10 +190,55 @@ class ListManager:
         self._load_ip_file(guard, resolve_path(self.cfg, "blocklists/builtin/cdn-guard.txt"))
         guard.finalize()
 
+        popular, psrc = set(), []
+        rep = self.cfg.get("reputation") or {}
+        for f in rep.get("popularity_files") or []:
+            n = self._load_domains(popular, resolve_path(self.cfg, f))
+            psrc.append({"source": f, "entries": n, "ok": n > 0})
+        for url in rep.get("popularity_urls") or []:
+            n = self._load_domains(popular, self._cache_path(url))
+            meta = self._read_meta(url)
+            psrc.append({"source": url, "entries": n, "ok": meta.get("ok", n > 0),
+                         "error": meta.get("error"), "fetched": meta.get("fetched")})
+        status["popular:sites"] = {"kind": "domains", "entries": len(popular), "sources": psrc}
+
         with self._lock:
             self.categories, self.ip_sets, self.status = cats, ipsets, status
             self.exempt, self.cdn_guard = exempt, guard
+            self.popular = popular
             self.version += 1
+
+    @staticmethod
+    def _load_domains(out: set, path: str | None) -> int:
+        if not path or not os.path.exists(path):
+            return 0
+        n = 0
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                d = line.strip().lower()
+                if d and not d.startswith("#"):
+                    out.add(d)
+                    n += 1
+        return n
+
+    def _parse_popularity(self, body: bytes, top: int) -> list[str]:
+        """Tranco / Umbrella style 'rank,domain' CSV (optionally zipped) -> registrable domains."""
+        from .services import registrable_domain
+        if body[:2] == b"PK":
+            import zipfile
+            z = zipfile.ZipFile(io.BytesIO(body))
+            body = z.read(z.namelist()[0])
+        out, seen = [], set()
+        for i, line in enumerate(body.decode("utf-8", "ignore").splitlines()):
+            if i >= top:
+                break
+            parts = line.strip().split(",")
+            name = parts[-1].strip().lower() if parts else ""
+            reg = registrable_domain(name)
+            if reg and "." in reg and reg not in seen:
+                seen.add(reg)
+                out.append(reg)
+        return out
 
     @staticmethod
     def _load_ip_file(s: IPSet, path: str | None) -> int:
@@ -245,6 +292,13 @@ class ListManager:
                     body = self._fetch(url)
                     if body:
                         self._store(url, body.decode("utf-8", "ignore"))
+            rep = self.cfg.get("reputation") or {}
+            for url in rep.get("popularity_urls") or []:
+                body = self._fetch(url)
+                if body:
+                    doms = self._parse_popularity(body, int(rep.get("popular_top", 200000)))
+                    if doms:
+                        self._store(url, "\n".join(doms) + "\n")
             for name, spec in (self.cfg.get("ip_lists") or {}).items():
                 for src in spec.get("sources") or []:
                     body = self._fetch(src["url"])

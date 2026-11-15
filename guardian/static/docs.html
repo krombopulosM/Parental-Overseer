@@ -209,8 +209,37 @@ something that slips past one is caught by the next.</p>
 <tr><td>Web archives, translators, caches</td><td>Blocked or decoded and checked (see Adult content protection).</td></tr>
 <tr><td>Smuggling data through DNS ("DNS tunnelling")</td><td>Detected from streams of long random names; the domain is blocked for that device.</td></tr>
 <tr><td>Splitting traffic into tiny pieces to dodge inspection</td><td>The inspector reassembles them; anything still unfinished after its window is treated as an evasion attempt.</td></tr>
-<tr><td>Anything else that hides inside genuine encryption</td><td>The <b>behaviour detector</b> spots a long, heavy connection carrying most of a device's traffic while the device stops making DNS lookups - the signature of a tunnel - and blocks it.</td></tr>
+<tr><td>A VPN or Tor server that isn't on any list</td><td>Blocked by how it works, not by its address - see "Targeting the technology, not server lists".</td></tr>
+<tr><td>Anything else that hides inside genuine encryption</td><td>Heavy traffic to an unknown destination is held for review; the <b>behaviour detector</b> spots a long, heavy connection carrying most of a device's traffic while the device stops making DNS lookups; and once caught, the tunnel software's fingerprint is blocked on every server.</td></tr>
 </tbody></table>
+</section>
+
+<section id="technology" data-title="Targeting the technology, not server lists">
+<h2>Targeting the technology, not server lists</h2>
+<p>Lists of VPN servers and Tor relays help, but they can never be complete: there are hundreds of VPN services,
+they add servers every day, and anyone can rent a server of their own. Tor Browser can be copied in on a USB stick
+from a friend's house, so blocking its website changes nothing. So the gateway's main defences don't depend on
+knowing the server at all - they target how these tools <i>work</i>:</p>
+<table>
+<thead><tr><th>Defence</th><th>Why no VPN or Tor can avoid it</th></tr></thead>
+<tbody>
+<tr><td><b>Web ports only</b></td><td>Children's devices can only send normal web traffic. VPN protocols (WireGuard, OpenVPN, IPsec…), Tor's own relay port and most bridges simply can't leave the device - whichever server they're aimed at.</td></tr>
+<tr><td><b>Genuine-protocol check</b></td><td>Traffic on web ports must really be a secure web connection or a web request. Disguised tunnels (Shadowsocks, obfs4 Tor bridges, "stealth" modes that fake it) fail.</td></tr>
+<tr><td><b>Only addresses the gateway handed out</b></td><td>VPN apps and Tor connect straight to server addresses they carry inside them; they never ask DNS. A child's device may only connect to addresses the gateway's own DNS gave it, so a brand-new server, an unlisted relay or a Tor Browser from a USB stick is refused on its very first connection.</td></tr>
+<tr><td><b>Tor's handshake shape</b></td><td>Tor's connections use made-up site names (www.<i>random letters</i>.com) that were never looked up - recognised and blocked even where the DNS check only reports.</td></tr>
+<tr><td><b>Learned software fingerprints</b></td><td>Every app opens secure connections with its own characteristic "hello" (its TLS fingerprint). When a tunnel is caught - by its behaviour, a hidden site name, a disguise, or your "Confirmed" click - its fingerprint is remembered, and that software is then blocked on <b>any</b> server, including ones that appear later. Fingerprints that browsers and ordinary apps use for normal sites are never learned. Learned fingerprints are listed on Rules &amp; schedules.</td></tr>
+<tr><td><b>Unknown destinations</b></td><td>The one thing a tunnel with a genuine domain and genuine encryption (a VPN routed through a CDN, a Tor "WebTunnel" bridge, a VPN on a rented server) can't hide is that it carries a lot of traffic to <i>somewhere</i>. For children, heavy or long-running traffic to a site that isn't popular, a known service, used by an adult in the house, or approved by you is cut and held on the Reviews page. Hosting platforms where anyone can run a server (Cloudflare Workers, Amazon EC2, Heroku…) never count as known.</td></tr>
+<tr><td><b>Behaviour</b></td><td>A device whose DNS goes quiet while one long connection carries all its traffic is tunnelling. On unknown destinations this is caught within about a minute.</td></tr>
+<tr><td><b>Escalation</b></td><td>A device that tries technique after technique within ten minutes is running a bypass tool: the alert names it (e.g. "Tor Browser") and the device is paused.</td></tr>
+</tbody></table>
+<h3>Example: Tor Browser brought in on a USB stick</h3>
+<ol class="steps">
+  <li>Tor Browser starts and tries to reach a relay by address on port 9001 or 443. Port 9001 can't leave the device; on 443 the address was never handed out by the gateway - refused. Relays that are publicly listed are dropped as well.</li>
+  <li>It falls back to a bridge. obfs4 bridges send random-looking bytes - they fail the genuine-protocol check. Snowflake needs traffic children's devices can't send. Meek and similar need fronting the gateway checks for.</li>
+  <li>A WebTunnel bridge uses a real domain and real encryption - its heavy traffic to an unknown destination is held, and its behaviour gives it away.</li>
+  <li>After a few of these attempts the escalation alert names "Tor Browser (or another Tor-based app)" and pauses the device.</li>
+</ol>
+<p>The same layers apply to any VPN app, whether it's on any list or not.</p>
 </section>
 
 <section id="torrents" data-title="Torrents">
@@ -342,7 +371,8 @@ VPN app, tap Connect, and every block disappears - <i>unless</i> the network sto
   <li><b>Paid / privacy VPNs</b> (Proton, Mullvad, NordVPN…). Same as above, plus published server lists the gateway downloads and blocks.</li>
   <li><b>"Stealth" or "obfuscated" modes</b> that disguise the tunnel as ordinary web traffic on port 443. Some fake a web connection (caught: not a real secure handshake). Some wrap the tunnel in genuine encryption (caught: the server's address was never handed out by the gateway, or it's on a VPN list, or its behaviour gives it away).</li>
   <li><b>VPNs built into browsers</b> (Opera, Brave, Microsoft Edge "Secure Network"). Their servers are blocked.</li>
-  <li><b>A VPN or proxy the child set up themselves</b> on a cloud server or a friend's computer. Not on any list - which is exactly what the "addresses the gateway handed out" check and the behaviour detector are for.</li>
+  <li><b>A VPN or proxy the child set up themselves</b> on a cloud server or a friend's computer. Not on any list - which is exactly what the "addresses the gateway handed out" check, the unknown-destination hold, the behaviour detector and learned fingerprints are for.</li>
+  <li><b>VPNs routed through big CDNs</b> (V2Ray/VLESS/Trojan on Cloudflare Workers and similar). They use a real domain and real encryption; the gateway treats hosting platforms as unknown, holds heavy traffic to them, and learns the client software's fingerprint once caught.</li>
 </ul>
 <p><b>Signs a child has been trying:</b> VPN and proxy alerts on the Alerts page, a device marked <i>Curious</i> or
 <i>Persistent</i> on the Health page, or a sudden "no internet" complaint from a device with a VPN app installed (the app is
@@ -356,8 +386,12 @@ the others as described in Adult content protection.</p>
 
 <h3 id="tech-tor">Tor</h3>
 <p><b>Tor</b> sends traffic through three volunteer-run relays around the world, each only knowing the next step. It's
-used for privacy, and also to reach anything a network blocks. The public relay addresses are published, and the gateway
-blocks them; Tor's hidden "bridges" either use non-web protocols (blocked) or disguises the inspector rejects.</p>
+used for privacy, and also to reach anything a network blocks. Tor Browser is a single program that can be copied onto a
+USB stick, so blocking its download page achieves little. What can't change is how it connects: straight to relay
+addresses it carries with it (never looked up in DNS - refused), using made-up site names in its handshakes (recognised),
+on Tor's own ports (blocked), or through "bridges" that either disguise themselves (rejected by the genuine-protocol check),
+need traffic children's devices can't send, or behave like a tunnel to an unknown destination (held). Public relay
+addresses are also blocked, and alerts name Tor explicitly. See "Targeting the technology, not server lists".</p>
 
 <h3 id="tech-doh">Encrypted DNS and private relays</h3>
 <p><b>DNS over HTTPS (DoH)</b> and <b>DNS over TLS (DoT, Android's "Private DNS")</b> send DNS questions encrypted to a

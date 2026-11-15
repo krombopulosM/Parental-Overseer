@@ -44,6 +44,10 @@ KINDS = {
     "hidden_router":      ("Other devices hidden behind this one", "medium"),
     "gateway_offline":    ("Gateway was offline", "medium"),
     "download_held":      ("Suspicious download held for review", "medium"),
+    "tor":                ("Tor connection blocked", "high"),
+    "vpn_fingerprint":    ("Known tunnel software blocked on a new server", "high"),
+    "unknown_site_held":  ("Heavy traffic to an unknown site held for review", "medium"),
+    "bypass_tool":        ("A bypass tool is running on this device", "high"),
     "adult_site":         ("Adult site blocked", "medium"),
     "adult_keyword":      ("Site with an adult name blocked", "medium"),
     "adult_family_dns":   ("Adult site caught by the family DNS filter", "medium"),
@@ -67,7 +71,7 @@ class AlertSink:
         self._recent: dict = {}
 
     def emit(self, kind: str, *, device_id=None, client_ip=None, detail="", dst=None,
-             domain=None, action="blocked", severity=None, base=None):
+             domain=None, action="blocked", severity=None, base=None, ref=None):
         title, default_sev = KINDS.get(kind, (kind, "medium"))
         key = (device_id, kind, dst, domain)
         now = time.time()
@@ -82,7 +86,7 @@ class AlertSink:
         confidence, why = self.scorer.score(kind, device_id, dst, domain, count, base)
         alert = {"kind": kind, "title": title, "severity": severity or default_sev,
                  "category": kind_category(kind), "device_id": device_id, "client_ip": client_ip,
-                 "detail": detail, "dst": dst, "domain": domain, "action": action, "ts": now,
+                 "detail": detail, "dst": dst, "domain": domain, "action": action, "ts": now, "ref": ref,
                  "count": count, "confidence": confidence, "confidence_why": why}
         if self.db is None:
             with self._lock:

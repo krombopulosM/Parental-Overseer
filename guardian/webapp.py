@@ -335,6 +335,9 @@ def create_app(g) -> FastAPI:
                 if a["domain"] and a["kind"] == "tunnel_behaviour":
                     g.db.add_allow("domain", registrable_domain(a["domain"]), f"alert {alert_id}")
                 note = f"{a['dst']} will no longer be blocked by this check"
+            elif action == "fingerprint":
+                g.reputation.forgive(a.get("ref"))
+                note = "that software's fingerprint is trusted again"
             elif action == "identity" and a["device_id"]:
                 g.db.set_suspect(a["device_id"], False)
                 fp = g.db.get_fingerprint(a["device_id"])
@@ -344,6 +347,15 @@ def create_app(g) -> FastAPI:
                 note = "device trusted again; its current fingerprint is now the expected one"
             else:
                 note = "confidence for similar alerts lowered"
+        if verdict == "tp" and a.get("ref") and a["kind"] in ("tunnel_behaviour", "sni_mismatch", "no_sni",
+                                                              "vpn_fingerprint", "tor", "unknown_site_held"):
+            if g.reputation.learn_bad(a["ref"], f"a tunnel you confirmed ({a['kind']})", "parent"):
+                note = "its software fingerprint will now be blocked on any server"
+        if verdict == "tp" and a["kind"] == "unknown_site_held" and a["domain"]:
+            row = g.db.query_one("SELECT ja4 FROM flows WHERE device_id=? AND dst_ip=? AND ja4 IS NOT NULL "
+                                 "ORDER BY last DESC LIMIT 1", (a["device_id"], a["dst"]))
+            if row and g.reputation.learn_bad(row["ja4"], f"the tunnel to {a['domain']}", "parent"):
+                note = "its software fingerprint will now be blocked on any server"
         g.db.review_alert(alert_id, verdict)
         g.refresh_allowlist()
         return {"ok": True, "note": note}
@@ -387,7 +399,7 @@ def create_app(g) -> FastAPI:
     @app.get("/api/rules")
     def rules():
         return {"rules": g.db.list_rules(), "allowlist": g.db.allowlist(),
-                "dyn_blocks": g.db.dyn_blocks()}
+                "dyn_blocks": g.db.dyn_blocks(), "fingerprints": g.reputation.learned()}
 
     @app.post("/api/rules")
     async def add_rule(req: Request):
@@ -430,6 +442,11 @@ def create_app(g) -> FastAPI:
         else:
             g.db.remove_dyn_block(ip)
         g.inspector.dyn_blocked.discard(ip)
+        return {"ok": True}
+
+    @app.delete("/api/fingerprints/{ja4}")
+    def forget_fingerprint(ja4: str):
+        g.reputation.forgive(ja4)
         return {"ok": True}
 
     @app.get("/api/schedules")
@@ -665,6 +682,10 @@ def create_app(g) -> FastAPI:
         check("Gateway uptime", "warn" if offline else "ok",
               f"offline {len(offline)} time(s) in the last {days} days" if offline else
               f"no gaps in the last {days} days")
+        pop = len(getattr(g.lists, "popular", ()) or ())
+        check("Unknown-destination protection", "ok" if pop else "warn",
+              f"{pop:,} popular sites known; heavy traffic elsewhere is held for review" if pop else
+              "popularity list not downloaded yet - unknown destinations are only reported, not held")
         check("Behaviour detector", "ok" if st.get("detector") else "warn",
               "running" if st.get("detector") else "off (needs traffic accounting)")
         bad = sum(c["level"] == "bad" for c in checks)

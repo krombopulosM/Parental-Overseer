@@ -27,7 +27,8 @@ LAN = [("pg-kid", "10.50.0.10", "02:00:00:00:00:10"), ("pg-kid2", "10.50.0.11", 
        ("pg-parent", "10.50.0.20", "02:00:00:00:00:20"), ("pg-console", "10.50.0.30", "02:00:00:00:00:30")]
 INET_IPS = ["198.51.100.10", "198.51.100.53", "198.51.100.54", "198.51.100.66", "198.51.100.77",
             "198.51.100.78", "198.51.100.79", "198.51.100.80", "198.51.100.81", "198.51.100.82",
-            "198.51.100.83", "198.51.100.84", "198.51.100.85", "9.9.9.9", "192.168.1.1"]
+            "198.51.100.83", "198.51.100.84", "198.51.100.85", "198.51.100.86", "198.51.100.87",
+            "198.51.100.88", "198.51.100.89", "198.51.100.90", "9.9.9.9", "192.168.1.1"]
 results: list[dict] = []
 procs: list[subprocess.Popen] = []
 
@@ -94,7 +95,13 @@ def write_config():
         "unsafe_search": {"files": [f"{b}/unsafe_search.txt"]},
     }
     cfg["adult"] = {**cfg.get("adult", {}), "family_dns": ["198.51.100.54"]}
+    open(f"{W}/popular.txt", "w").write("site.test\nshared-cdn.test\nplain.test\n")
+    open(f"{W}/tor-test.txt", "w").write("198.51.100.87\n")
+    cfg["reputation"] = {"popularity_files": [f"{W}/popular.txt"], "popularity_urls": []}
+    cfg["vpn"] = {**cfg.get("vpn", {}), "unknown_min_bytes": 20_000_000}
+    cfg["escalation"] = {**cfg.get("escalation", {}), "pause_minutes": 0}   # keep the test devices online
     cfg["ip_lists"] = {"vpn": {"files": [f"{b}/vpn-ips.txt", f"{W}/vpn-test.txt"]},
+                       "tor": {"files": [f"{W}/tor-test.txt"]},
                        "doh": {"files": [f"{b}/doh-ips.txt"]}}
     cfg["enforcement"]["consistency_exempt"] = f"{b}/consistency-exempt.txt"
     cfg["detector"].update(interval=2, min_duration=4, min_bytes=2_000_000, window=30,
@@ -383,6 +390,32 @@ def main():
             record(sec, f"alert: {k}", k in kinds, "")
         h = api("get", "/api/health?days=7")
         record(sec, "Health counts the 'Adult content' category", h["totals"].get("adult", 0) > 0, h["totals"])
+
+        sec = "VPN & Tor technology (servers on no list)"
+        run_suite("pg-kid2", "kid2_vpn_app", sec)
+        run_suite("pg-kid", "kid_tor", sec)
+        run_suite("pg-console", "console_tor", sec)
+        run_suite("pg-kid", "kid_unknown_dest", sec)
+        alerts = api("get", "/api/alerts?limit=2000")["alerts"]
+        by = {}
+        for a in alerts:
+            by.setdefault(a["kind"], []).append(a)
+        fp = by.get("vpn_fingerprint", [])
+        record(sec, "alert: tunnel software recognised on a new server (fingerprint kept as evidence)",
+               bool(fp) and bool(fp[0].get("ref")), fp[0]["detail"][:120] if fp else "")
+        record(sec, "alert: Tor named as Tor", "tor" in by, "")
+        held = [d for d in api("get", "/api/downloads")["pending"] if d.get("kind") == "unknown"]
+        record(sec, "unknown-destination tunnel waiting on the Reviews page", bool(held),
+               held[0]["reasons"] if held else "")
+        learned = api("get", "/api/rules")["fingerprints"]
+        record(sec, "learned tunnel fingerprints listed", len(learned) >= 1,
+               [(f["bad_label"], f["bad_source"]) for f in learned][:3])
+        tool = [a for a in by.get("bypass_tool", []) if a["device_id"] == kid]
+        record(sec, "escalation: the kid's device is named as running a bypass tool", bool(tool),
+               tool[0]["detail"][:140] if tool else "")
+        h = api("get", "/api/health?days=7")
+        chk = [c for c in h["checks"] if c["name"] == "Unknown-destination protection"]
+        record(sec, "Health: unknown-destination protection active", chk and chk[0]["level"] == "ok", chk)
 
         sec = "In-app guide"
         markers = ["How it works", "VPNs - what they are", "Stopping workarounds", "Adult content protection",

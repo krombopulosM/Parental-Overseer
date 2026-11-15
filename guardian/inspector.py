@@ -25,8 +25,8 @@ import time
 from dataclasses import dataclass
 
 from .protocols import (NEED_MORE, TCP_FIN, TCP_RST, classify_torrent_udp, classify_udp,
-                        identify_tcp_stream, is_bittorrent_handshake, is_torrent_http, openvpn_confirm,
-                        parse_client_hello, parse_http_request, parse_ip)
+                        identify_tcp_stream, is_bittorrent_handshake, is_torrent_http, looks_like_tor_sni,
+                        openvpn_confirm, parse_client_hello, parse_http_request, parse_ip)
 from .services import is_ip_literal, name_matches, registrable_domain
 
 ACCEPT, DROP, RESET = "accept", "drop", "reset"
@@ -115,6 +115,7 @@ class Inspector:
         self.allow_ips: set[str] = set()          # destinations a parent marked "not a bypass"
         self.downloads = None                     # DownloadGuard (holds suspicious downloads)
         self.adult = None                         # AdultGuard (name heuristics, proxy decoding)
+        self.reputation = None                    # Reputation (known destinations, learned fingerprints)
         self.flows: dict[tuple, _Flow] = {}
         self.stats = collections.Counter()
         self._since_gc = 0
@@ -169,7 +170,7 @@ class Inspector:
 
     # ------------------------------------------------------------ helpers
     def _block(self, ctx, pkt, key, kind, detail, action=RESET, domain=None, alert=True,
-               severity=None, flow: _Flow | None = None, base=None) -> Verdict:
+               severity=None, flow: _Flow | None = None, base=None, ref=None) -> Verdict:
         if pkt.is_udp and action == RESET:
             action = DROP
         v = Verdict(action, detail, kind)
@@ -179,11 +180,13 @@ class Inspector:
         self.labels.set(key, verdict="blocked", reason=detail, kind=kind)
         if alert and self.alerts:
             self.alerts.emit(kind, device_id=ctx.device_id, client_ip=ctx.ip, dst=pkt.dst,
-                             domain=domain, detail=detail, severity=severity, base=base)
+                             domain=domain, detail=detail, severity=severity, base=base, ref=ref)
         return v
 
     def _check_destination(self, ctx, pkt, key) -> Verdict | None:
         hit = self.lists.ip_list_match(pkt.dst)
+        if hit == "tor":
+            return self._block(ctx, pkt, key, "tor", f"{pkt.dst}:{pkt.dport} is a Tor relay", action=DROP)
         if hit == "vpn":
             name = self.dnscache.best_name(ctx.ip, pkt.dst)
             return self._block(ctx, pkt, key, "vpn_server",
@@ -320,6 +323,9 @@ class Inspector:
             if names and not name_matches(name, names):
                 detail = (f"{what} says {name} but {pkt.dst} was looked up as "
                           f"{sorted(names)[0]} - disguised tunnel or domain fronting")
+                ja4 = (self.labels.get(key) or {}).get("ja4")
+                if self.reputation is not None and ja4:
+                    self.reputation.learn_bad(ja4, f"a disguised tunnel pretending to be {name}", "sni_mismatch")
                 if mode == "enforce":
                     return self._block(ctx, pkt, key, "sni_mismatch", detail, domain=name, flow=fl)
                 self.alerts and self.alerts.emit("sni_mismatch", device_id=ctx.device_id,
@@ -332,19 +338,41 @@ class Inspector:
 
     def _decide_tls(self, ctx, pkt, key, fl, ch) -> Verdict:
         self.labels.set(key, domain=ch.sni, domain_src="sni", ja4=ch.ja4)
+        rep = self.reputation
         if not ch.sni or ch.sni_is_ip:
             if ctx.g.get("require_sni") and pkt.dst not in self.lists.exempt:
+                if rep is not None:
+                    rep.learn_bad(ch.ja4, f"a client that hid its site name (to {pkt.dst})", "no_sni")
                 return self._block(ctx, pkt, key, "no_sni",
                                    f"TLS to {pkt.dst} without a site name"
                                    + (f" (used IP {ch.sni})" if ch.sni else "")
-                                   + " - typical of VPN/proxy clients", flow=fl)
+                                   + " - typical of VPN/proxy clients", flow=fl, ref=ch.ja4)
             fl.verdict = ALLOW
             return ALLOW
+        if looks_like_tor_sni(ch.sni) and not self.dnscache.names_for_ip(pkt.dst):
+            if rep is not None:
+                rep.learn_bad(ch.ja4, "Tor", "tor_sni")
+            return self._block(ctx, pkt, key, "tor",
+                               f"Tor relay handshake to {pkt.dst} (made-up site name {ch.sni}, never looked up)",
+                               flow=fl, ref=ch.ja4)
         if ch.sni in self.ech_names or registrable_domain(ch.sni) in self.ech_names:
             return self._block(ctx, pkt, key, "ech",
                                f"Encrypted Client Hello via {ch.sni} hides which site is being "
                                f"visited", domain=ch.sni, flow=fl)
-        return self._name_checks(ctx, pkt, key, fl, ch.sni, "TLS server name")
+        v = self._name_checks(ctx, pkt, key, fl, ch.sni, "TLS server name")
+        if v is not ALLOW or rep is None:
+            return v
+        known, _ = rep.known(ch.sni, ctx.device_id)
+        if known:
+            rep.note_good(ch.ja4)               # browsers and normal apps: never learned as tunnels
+            return v
+        label = rep.bad_label(ch.ja4)
+        if label:
+            return self._block(ctx, pkt, key, "vpn_fingerprint",
+                               f"The software connecting to {ch.sni} has the same TLS fingerprint as {label}, "
+                               f"caught earlier - the same tunnel app on a new server",
+                               domain=registrable_domain(ch.sni), flow=fl, ref=ch.ja4)
+        return v
 
     def _decide_http(self, ctx, pkt, key, fl, req) -> Verdict:
         self.labels.set(key, domain=req.host, domain_src="http")

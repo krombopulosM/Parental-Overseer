@@ -111,6 +111,7 @@ class GuardianResolver(BaseResolver):
         self._seen_domains: set[str] = set()
         self.counters = collections.Counter()
         self.adult = None                     # AdultGuard, wired by the app
+        self.reputation = None                # Reputation: adults' sites become "familiar"
 
     # ------------------------------------------------------------ helpers
     def _log(self, ctx, qname, qtype, action, reason):
@@ -289,6 +290,8 @@ class GuardianResolver(BaseResolver):
             self.dnscache.record(client_ip, names, ips)
 
         self._log(ctx, qname, qtype, "allowed", note)
+        if self.reputation is not None and not ctx.filtered and qtype in ("A", "AAAA") and ips:
+            self.reputation.mark_familiar(qname)
         base = registrable_domain(qname)
         if base and base not in self._seen_domains and not is_ip_literal(base):
             self._seen_domains.add(base)

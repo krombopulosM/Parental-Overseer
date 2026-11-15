@@ -88,6 +88,21 @@ blocking; unknown video is only reported). A group can override it with
 platforms (Reddit, X, Discord, Telegram) is behind encryption, so block the
 platform if needed. Mobile data needs device-level controls.
 
+## Targeting VPN and Tor technology, not server lists
+
+Server lists can't keep up: new VPN services, new servers every day, rented
+servers, Tor Browser copied in on a USB stick. The main defences don't depend
+on knowing the server:
+
+- **Web ports only** for children: VPN protocols and Tor's relay port can't leave the device, whatever the server.
+- **Genuine-protocol check** on web ports: disguised tunnels (Shadowsocks, obfs4, fake-TLS "stealth" modes) fail.
+- **Only addresses the gateway's DNS handed out:** VPN apps and Tor connect to built-in addresses without DNS, so new or unlisted servers are refused on the first packet.
+- **Tor's handshake shape:** made-up `www.<random>.com` names that were never looked up.
+- **Learned fingerprints:** once any tunnel is caught (behaviour, hidden site name, disguise, or your "Confirmed"), its software's TLS (JA4) fingerprint is blocked on *every* server. Fingerprints browsers use for normal sites are never learned. They're listed on Rules & schedules, with a Forget button.
+- **Unknown destinations:** heavy traffic (15 MB, or 10 min with 3 MB) to a site that isn't popular (Tranco / Umbrella top lists), a known service, used by an adult in the house, or approved is cut and held for review. Hosting platforms (Workers, EC2, Heroku…) never count as known. This is what catches tunnels with real domains and real encryption (CDN-routed VLESS/V2Ray, Tor WebTunnel bridges, self-hosted VPNs).
+- **Faster behaviour detection** on unknown destinations: about 1 minute instead of 5.
+- **Escalation:** 3+ different techniques from one device in 10 minutes names the tool ("Tor Browser", "a VPN or proxy app") and pauses the device for 15 minutes.
+
 ## Torrents
 
 | Signal | Catches |
@@ -367,7 +382,7 @@ Categories, lists, detector thresholds and schedules are all in
 ## Tests
 
 ```bash
-pytest -q                               # 111 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult...)
+pytest -q                               # 130 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
@@ -382,7 +397,10 @@ YouTube in the background must be described exactly that way. And it checks the
 download guard end to end: a file-sharing download cut mid-transfer, retries
 blocked until approved, then allowed; a plain-HTTP `.exe` stopped before it
 starts, then denied. The adult-content layers are checked end to end, and so
-is the in-app guide. **147 checks pass.** Finally it kills the service and
+is the in-app guide. So are VPN and Tor servers that are on no list: an unlisted VPN
+caught by behaviour and then blocked by fingerprint on a second brand-new server,
+unlisted Tor relays, and a CDN-style tunnel held as an unknown destination.
+**162 checks pass.** Finally it kills the service and
 confirms kids' access fails closed while the parent is unaffected. (The IPv6 router check is
 skipped on kernels booted without IPv6.)
 
@@ -404,6 +422,7 @@ guardian/
   activity.py          traffic-shape classifier: gaming / video / call / download / ...
   downloads.py         download guard: detect, score, hold for review (downloads + unknown video)
   adult.py             SafeSearch, family DNS, name heuristics, proxy decoding
+  reputation.py        known destinations (popularity, familiarity) + learned tunnel fingerprints
   static/docs.html     the in-app Guide
   gateway/             nftables ruleset, NFQUEUE runner
   lists.py             blocklist + VPN-server list downloads

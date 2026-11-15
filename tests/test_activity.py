@@ -92,6 +92,10 @@ def test_headline_download_and_idle():
 # ------------------------------------------------------------------ download guard
 @pytest.fixture
 def stack(tmp_path):
+    return build_stack(tmp_path)
+
+
+def build_stack(tmp_path):
     (tmp_path / "filehost.txt").write_text("mega.nz\nmediafire.com\n")
     cfg = load_config(os.path.join(ROOT, "config.yaml"))
     cfg["mode"] = "gateway"

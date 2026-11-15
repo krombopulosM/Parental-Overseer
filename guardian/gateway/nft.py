@@ -263,9 +263,9 @@ table inet {TABLE} {{
             return False
         script = ""
         for lname in ("vpn", "doh"):
-            s = self.lists.ip_sets.get(lname)
-            v4 = s.cidrs(4) if s else []
-            v6 = s.cidrs(6) if s else []
+            sets = [self.lists.ip_sets.get(n) for n in ((lname, "tor") if lname == "vpn" else (lname,))]
+            v4 = sorted({c for s in sets if s for c in s.cidrs(4)})
+            v6 = sorted({c for s in sets if s for c in s.cidrs(6)})
             script += self._replace_set(f"{lname}_v4", v4)
             script += self._replace_set(f"{lname}_v6", v6)
         with self._lock:

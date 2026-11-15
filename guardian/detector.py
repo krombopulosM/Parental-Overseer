@@ -29,11 +29,12 @@ def _span(seconds: float) -> str:
 
 
 class Detector:
-    def __init__(self, cfg, db, monitor, stats, lists, alerts, gateway=None):
+    def __init__(self, cfg, db, monitor, stats, lists, alerts, gateway=None, reputation=None):
         d = cfg["detector"]
         self.cfg = d
         self.db, self.monitor, self.stats, self.lists, self.alerts = db, monitor, stats, lists, alerts
         self.gateway = gateway
+        self.reputation = reputation
         self.exempt = set(d.get("exempt_services") or [])
         self._allow_ips: set[str] = set()
         self._allow_domains: set[str] = set()
@@ -92,6 +93,11 @@ class Detector:
         if rec.dst_port not in (80, 443):
             score += 10
             why.append(f"unusual port {rec.proto}/{rec.dst_port}")
+        if self.reputation is not None and rec.domain:
+            known, reason = self.reputation.known(rec.domain, rec.device_id)
+            if not known:
+                score += 20
+                why.append(f"{registrable_domain(rec.domain)} is {reason}")
         return score, why
 
     def evaluate(self, now: float | None = None):
@@ -110,7 +116,10 @@ class Detector:
             for rec in recs:
                 if rec.flagged or rec.verdict == "blocked":
                     continue
-                if rec.duration < c["min_duration"] or rec.total < c["min_bytes"]:
+                unknown = self.reputation is not None and not self.reputation.known(rec.domain, rec.device_id)[0]
+                min_d = min(c["min_duration"], c.get("unknown_min_duration", 60)) if unknown else c["min_duration"]
+                min_b = min(c["min_bytes"], c.get("unknown_min_bytes", 2_000_000)) if unknown else c["min_bytes"]
+                if rec.duration < min_d or rec.total < min_b:
                     continue
                 if rec.service in self.exempt or rec.dst_ip in self._allow_ips:
                     continue
@@ -123,6 +132,8 @@ class Detector:
 
     def _act(self, rec, score, why):
         rec.flagged = True
+        if self.reputation is not None and rec.ja4:
+            self.reputation.learn_bad(rec.ja4, f"the tunnel to {rec.domain or rec.dst_ip}", "tunnel_behaviour")
         hours = self.cfg.get("block_hours", 24)
         target = f"{rec.dst_ip}:{rec.dst_port}" + (f" ({rec.domain})" if rec.domain else "")
         detail = (f"Long-lived connection to {target}, {rec.total / 1e6:.0f} MB over "
@@ -133,7 +144,7 @@ class Detector:
         else:
             action = "would block (monitor mode)"
         self.alerts.emit("tunnel_behaviour", device_id=rec.device_id, client_ip=rec.client_ip,
-                         dst=rec.dst_ip, domain=rec.domain, detail=detail, action=action)
+                         dst=rec.dst_ip, domain=rec.domain, detail=detail, action=action, ref=rec.ja4)
         res = {"device_id": rec.device_id, "dst": rec.dst_ip, "domain": rec.domain,
                "service": service_label(rec.service), "score": score, "why": why, "action": action}
         self.flagged.append(res)

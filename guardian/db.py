@@ -84,6 +84,10 @@ CREATE TABLE IF NOT EXISTS activity (
     device_id TEXT, minute INTEGER, activity TEXT, headline TEXT, confidence INTEGER,
     PRIMARY KEY (device_id, minute)
 );
+CREATE TABLE IF NOT EXISTS familiar_domains (domain TEXT PRIMARY KEY, last_seen REAL);
+CREATE TABLE IF NOT EXISTS tls_fingerprints (
+    ja4 TEXT PRIMARY KEY, good INTEGER DEFAULT 0, bad_label TEXT, bad_source TEXT, learned REAL, last REAL
+);
 CREATE TABLE IF NOT EXISTS fingerprints (
     mac TEXT PRIMARY KEY, fp TEXT, hostname TEXT, prev_fp TEXT, changed REAL,
     first_seen REAL, last_seen REAL
@@ -99,6 +103,7 @@ _ADDED_COLUMNS = [
     ("alerts", "reviewed_at", "REAL"),
     ("devices", "suspect", "INTEGER DEFAULT 0"),
     ("downloads", "kind", "TEXT DEFAULT 'download'"),
+    ("alerts", "ref", "TEXT"),                 # extra reference, e.g. the TLS fingerprint involved
 ]
 
 _FLOW_UPSERT = """
@@ -390,11 +395,11 @@ class DB:
                 return row["id"], False
             cur = self._w.execute(
                 "INSERT INTO alerts (ts, last_ts, count, device_id, client_ip, kind, severity, detail, "
-                "dst, domain, action, category, confidence, confidence_why) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "dst, domain, action, category, confidence, confidence_why, ref) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (now, now, 1, a.get("device_id"), a.get("client_ip"), a["kind"], a.get("severity"),
                  a.get("detail"), a.get("dst"), a.get("domain"), a.get("action"), a.get("category"),
-                 a.get("confidence"), why))
+                 a.get("confidence"), why, a.get("ref")))
             self._w.commit()
             return cur.lastrowid, True
 

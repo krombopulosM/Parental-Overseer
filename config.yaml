@@ -50,6 +50,7 @@ groups:
     allow_udp: true
     require_sni: true
     dns_consistency: "log"
+    unknown_destinations: "alert"   # game servers are often obscure: report, don't hold
   quarantine:
     filtered: true
     categories: [ads, adult, gambling, bypass, torrent, mirrors, unsafe_search]
@@ -93,12 +94,14 @@ ip_lists:
     sources:
       - {type: mullvad, url: "https://api.mullvad.net/www/relays/all/"}
       - {type: proton,  url: "https://api.protonvpn.ch/vpn/logicals"}
-      - {type: tor,     url: "https://onionoo.torproject.org/details?type=relay&running=true&fields=or_addresses"}
       # Whole address ranges of VPN hosting companies. Catches more VPNs, but
       # those companies also host ordinary websites, so expect some false
       # positives. Uncomment if you accept that trade-off.
       # - {type: cidr, url: "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt"}
     pin_domains: blocklists/builtin/pin-vpn.txt
+  tor:                         # every running Tor relay (refreshed daily; alerts say "Tor")
+    sources:
+      - {type: tor, url: "https://onionoo.torproject.org/details?type=relay&running=true&fields=or_addresses"}
   doh:
     files: [blocklists/builtin/doh-ips.txt]
     pin_domains: blocklists/builtin/pin-doh.txt
@@ -120,6 +123,33 @@ enforcement:
 torrent:
   fanout_peers: 25             # distinct peers on random ports within `window` = torrent/P2P client
   window: 60
+
+# ---------------------------------------------------------------- VPN / Tor technology (not just lists)
+# Lists of VPN servers can't keep up, so these target the technology itself.
+# (Always on for filtered devices: web ports only, genuine-protocol checks,
+# connect only to addresses the gateway's DNS handed out.)
+reputation:
+  # The world's most-visited sites. Heavy traffic to anything that isn't
+  # popular, a known service, used by an adult here, or approved is suspect.
+  popularity_urls:
+    - "https://tranco-list.eu/top-1m.csv.zip"
+    - "http://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip"
+  popular_top: 200000
+  familiar_days: 60            # sites an adult's device used in this many days count as "known"
+vpn:
+  # review: cut + hold for your decision | alert: report only | off
+  # (falls back to alert automatically until the popularity list has downloaded)
+  unknown_destinations: review
+  unknown_min_bytes: 15000000   # ... after this much traffic to one unknown site
+  unknown_min_seconds: 600      # ... or this long with at least 3 MB
+  learn_fingerprints: true      # a caught tunnel's TLS fingerprint is blocked on every server
+escalation:
+  # Several different bypass techniques from one device in `window` seconds =
+  # a VPN/Tor/proxy tool is running. The device is named and paused.
+  window: 600
+  min_techniques: 3
+  min_confidence: 70
+  pause_minutes: 15             # 0 = report only
 
 # ---------------------------------------------------------------- downloads
 downloads:
@@ -177,6 +207,8 @@ detector:
   interval: 30
   min_duration: 300            # a connection must be this long-lived (s) ...
   min_bytes: 10000000          # ... and carry this much data to be scored
+  unknown_min_duration: 60     # much sooner when the destination is unknown
+  unknown_min_bytes: 2000000
   window: 300
   dns_silence_max_queries: 3   # a device tunnelling its DNS stops asking us
   silence_min_bytes: 5000000

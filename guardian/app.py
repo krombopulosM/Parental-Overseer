@@ -64,13 +64,18 @@ class Guardian:
         self.downloads.adult = self.adult
         self.inspector.adult = self.adult
         self.resolver.adult = self.adult
+        from .reputation import Reputation
+        self.reputation = Reputation(cfg, self.db, self.lists, guard=self.downloads)
+        self.inspector.reputation = self.reputation
+        self.downloads.reputation = self.reputation
+        self.resolver.reputation = self.reputation
         self.inspector.downloads = self.downloads
         if self.monitor is not None:
             self.monitor.downloads = self.downloads
         self.detector = None
         if self.monitor is not None and cfg["detector"].get("enabled", True):
             self.detector = Detector(cfg, self.db, self.monitor, self.stats, self.lists,
-                                     self.alerts, self.gateway)
+                                     self.alerts, self.gateway, reputation=self.reputation)
         self.errors: dict[str, str] = {}
         self.lanwatch = None
         if self.mode == "gateway" and (cfg.get("tamper") or {}).get("enabled", True):
@@ -78,6 +83,9 @@ class Guardian:
             self.lanwatch = LanWatch(cfg, self.db, self.policy, self.identity, self.alerts,
                                      on_change=self.device_changed)
         self.alerts.listeners.append(self._auto_pause)
+        self.alerts.listeners.append(self._escalate)
+        self._attempts: dict[str, list] = {}
+        self._escalated: dict[str, float] = {}
         self.refresh_allowlist()
 
     def _flow_backend(self):
@@ -147,6 +155,46 @@ class Guardian:
         self.db.execute("UPDATE alerts SET action=? WHERE id=(SELECT MAX(id) FROM alerts WHERE device_id=? "
                         "AND kind=?)", (f"device paused for {int(minutes)} min", did, alert["kind"]))
         self.device_changed()
+
+    _ESCALATION_CATEGORIES = ("vpn", "dns", "disguise", "torrent")
+
+    def _escalate(self, alert):
+        """One blocked attempt is an app; technique after technique is a person
+        working through a bypass tool. Name the tool and pause the device."""
+        from .confidence import kind_category
+        esc = self.cfg.get("escalation") or {}
+        did = alert.get("device_id")
+        if not did or alert["kind"] == "bypass_tool" or kind_category(alert["kind"]) not in self._ESCALATION_CATEGORIES:
+            return
+        if (alert.get("confidence") or 0) < int(esc.get("min_confidence", 70)):
+            return
+        now = time.time()
+        window = float(esc.get("window", 600))
+        hist = [(t, k) for t, k in self._attempts.get(did, []) if now - t < window] + [(now, alert["kind"])]
+        self._attempts[did] = hist[-200:]
+        kinds = sorted({k for _, k in hist})
+        if len(kinds) < int(esc.get("min_techniques", 3)) or now - self._escalated.get(did, 0) < 1800:
+            return
+        self._escalated[did] = now
+        if "tor" in kinds:
+            tool = "Tor Browser (or another Tor-based app)"
+        elif any(k in kinds for k in ("vpn_server", "blocked_udp", "vpn_fingerprint", "tunnel_behaviour",
+                                      "protocol_violation", "no_sni", "sni_mismatch")):
+            tool = "a VPN or proxy app"
+        else:
+            tool = "a bypass tool"
+        minutes = float(esc.get("pause_minutes", 0) or 0)
+        filtered = self.cfg["groups"][self.policy.configured_group(did)]["filtered"]
+        action = "detected"
+        if minutes and filtered:
+            if self.db.get_device(did) is None:
+                self.db.update_device(did)
+            self.scheduler.pause(did, minutes)
+            self.device_changed()
+            action = f"device paused for {int(minutes)} min"
+        self.alerts.emit("bypass_tool", device_id=did, client_ip=alert.get("client_ip"), action=action,
+                         detail=f"{tool} appears to be running: {len(kinds)} different techniques tried within "
+                                f"{int(window // 60)} minutes ({', '.join(kinds)}). Every attempt was blocked.")
 
     def _check_offline_gap(self):
         hb = self.db.get_meta("heartbeat")

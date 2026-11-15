@@ -27,7 +27,7 @@ class FlowRec:
     __slots__ = ("tuple", "flow_key", "device_id", "client_ip", "proto", "dst_ip", "dst_port",
                  "domain", "domain_src", "service", "ja4", "verdict", "reason", "start", "last",
                  "bytes_up", "bytes_down", "pkts_up", "pkts_down", "ended", "window", "flagged",
-                 "filtered", "group", "dirty", "ticks", "activity", "dl_state")
+                 "filtered", "group", "dirty", "ticks", "activity", "dl_state", "unk_state")
 
     def __init__(self, sample, ctx, now):
         proto, client, sport, dst, dport = sample.tuple
@@ -48,6 +48,7 @@ class FlowRec:
         self.dirty = True
         self.activity = None
         self.dl_state = None
+        self.unk_state = None
 
     @property
     def total(self):
@@ -179,7 +180,7 @@ class FlowMonitor:
                     cls = act.cls if act else "other"
                     r = rates.setdefault(rec.device_id, {})
                     r[cls] = r.get(cls, 0) + (last[2] + last[3]) / dt
-                if self.downloads is not None and rec.filtered and act is not None:
+                if self.downloads is not None and rec.filtered:
                     guard_calls.append((rec, act, f))
             for dev in set(self.live) | set(per_device) | set(rates):
                 dq = self.live.setdefault(dev, collections.deque())
@@ -198,7 +199,10 @@ class FlowMonitor:
 
         for rec, act, f in guard_calls:
             try:
-                self.downloads.on_flow(rec, act, f, self.cfg["groups"].get(rec.group))
+                gcfg = self.cfg["groups"].get(rec.group)
+                if act is not None:
+                    self.downloads.on_flow(rec, act, f, gcfg)
+                self.downloads.on_unknown(rec, act, f, gcfg)
             except Exception as e:
                 print(f"[downloads] {e}")
         if self.db is not None:

@@ -340,7 +340,7 @@ views.downloads = {
       `encrypted downloads can't be opened. ` + (d.inline ? "" : "Monitor mode: nothing is actually stopped.");
     $("#dl-pending").innerHTML = d.pending.length ? d.pending.map(x => `
       <div class="card dl-card">
-        <div class="card-head"><div style="min-width:0"><span class="badge ${x.kind === "video" ? "info" : ""}">${x.kind === "video" ? "Video" : "Download"}</span>
+        <div class="card-head"><div style="min-width:0"><span class="badge ${x.kind === "video" ? "info" : x.kind === "unknown" ? "warn" : ""}">${x.kind === "video" ? "Video" : x.kind === "unknown" ? "Unknown site" : "Download"}</span>
           <div class="site" style="margin-top:6px">${esc(x.filename || x.site)}</div>
           <div class="small muted">${x.filename ? esc(x.site) + " · " : ""}${deviceLink(x.device_id, x.device)} · ${ago(x.ts)}</div></div>
           <span class="score-pill" title="Suspicion score">${x.score}/100</span></div>
@@ -352,7 +352,7 @@ views.downloads = {
     const st = { pending: "warn", approved: "ok", allowed: "", denied: "bad" };
     $("#dl-all").innerHTML = d.downloads.length ? `<table><thead><tr><th>When</th><th>Type</th><th>Device</th><th>From</th><th>File</th>
       <th class="right">Seen</th><th class="right">Suspicion</th><th>Status</th></tr></thead><tbody>
-      ${d.downloads.map(x => `<tr><td class="small nowrap muted">${new Date(x.ts * 1000).toLocaleString()}</td><td class="small">${x.kind === "video" ? "Video" : "Download"}</td>
+      ${d.downloads.map(x => `<tr><td class="small nowrap muted">${new Date(x.ts * 1000).toLocaleString()}</td><td class="small">${x.kind === "video" ? "Video" : x.kind === "unknown" ? "Unknown site" : "Download"}</td>
         <td class="nowrap">${deviceLink(x.device_id, x.device)}</td><td class="mono small">${esc(x.site)}</td>
         <td class="small">${esc(x.filename || "")}</td><td class="right nowrap">${x.bytes_seen ? fmtBytes(x.bytes_seen) : ""}</td>
         <td class="right" title="${esc(x.reasons.join("\n"))}">${x.score}</td>
@@ -647,6 +647,8 @@ views.rules = {
           <button class="primary">Add</button></form></div>
         <div class="scroll" id="sched-table"></div></div>
     </div>
+    <div class="panel"><div class="panel-head"><h2>Tunnel software recognised by fingerprint</h2>
+      <div class="tools small muted">Blocked on every server, including new ones</div></div><div class="scroll" id="fp-table"></div></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h2>Automatically blocked destinations</h2></div><div class="scroll" id="dyn-table"></div></div>
       <div class="panel"><div class="panel-head"><h2>Marked as fine</h2></div><div class="scroll" id="allow-table"></div></div>
@@ -681,6 +683,11 @@ views.rules = {
         <td class="nowrap">${esc(x.start)} – ${esc(x.end)}</td><td class="small">${esc(x.days)}</td>
         <td class="right"><button class="small danger" data-del="/api/schedules/${x.id}">Remove</button></td></tr>`).join("")}
       </tbody></table>` : `<div class="empty">No schedules.</div>`;
+    $("#fp-table").innerHTML = (r.fingerprints || []).length ? `<table><thead><tr><th>Learned from</th><th>How</th><th>Fingerprint (JA4)</th><th>When</th><th></th></tr></thead><tbody>
+      ${r.fingerprints.map(x => `<tr><td>${esc(x.bad_label)}</td><td class="small muted">${esc(x.bad_source || "")}</td>
+        <td class="mono small">${esc(x.ja4)}</td><td class="small nowrap">${x.learned ? new Date(x.learned * 1000).toLocaleString() : ""}</td>
+        <td class="right"><button class="small" data-del="/api/fingerprints/${encodeURIComponent(x.ja4)}" title="Stop blocking this software">Forget</button></td></tr>`).join("")}
+      </tbody></table>` : `<div class="empty">None yet. When a tunnel is caught, its software's fingerprint appears here and is blocked on any server.</div>`;
     $("#dyn-table").innerHTML = r.dyn_blocks.length ? `<table><thead><tr><th>Destination</th><th>Why</th><th>Until</th><th></th></tr></thead><tbody>
       ${r.dyn_blocks.map(x => `<tr><td class="mono">${esc(x.ip)}</td><td class="small muted">${esc(x.reason)}</td>
         <td class="small nowrap">${new Date(x.expires * 1000).toLocaleString()}</td>

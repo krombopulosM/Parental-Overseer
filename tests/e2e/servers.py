@@ -33,6 +33,8 @@ ZONE = {
     "hotxxxvideos.test": "198.51.100.10", "spicy-new-site.test": "198.51.100.10",
     "archive.ph": "198.51.100.10", "search.brave.com": "198.51.100.10", "pornhub.com": "198.51.100.10",
     "videos.unknown-tube.test": "198.51.100.85",
+    "relay-one.unknown.test": "198.51.100.86", "relay-two.unknown.test": "198.51.100.88",
+    "files.unknown-host.test": "198.51.100.90",
 }
 FAMILY_FLAGGED = {"spicy-new-site.test"}
 
@@ -137,7 +139,8 @@ def main(cert, key):
     DNSServer(Zone(), address="198.51.100.53", port=53, logger=DNSLogger("-request,-reply")).start_thread()
     DNSServer(Zone(family=True), address="198.51.100.54", port=53, logger=DNSLogger("-request,-reply")).start_thread()
     for ip in ("198.51.100.10", "198.51.100.66", "198.51.100.77", "198.51.100.79", "198.51.100.81",
-               "198.51.100.82", "198.51.100.83", "198.51.100.84", "198.51.100.85", "9.9.9.9"):
+               "198.51.100.82", "198.51.100.83", "198.51.100.84", "198.51.100.85", "198.51.100.86",
+               "198.51.100.87", "198.51.100.88", "198.51.100.89", "198.51.100.90", "9.9.9.9"):
         tcp((ip, 443), TLSHandler, ctx)
     tcp(("198.51.100.10", 80), HTTPHandler)
     tcp(("192.168.1.1", 80), HTTPHandler)

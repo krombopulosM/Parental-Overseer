@@ -40,6 +40,11 @@ class DownloadGuard:
         self.inline = cfg.get("mode") == "gateway"
         self.kill_flow = kill_flow
         self.adult = None                     # AdultGuard: unknown-video holds
+        self.reputation = None                # Reputation: unknown-destination holds
+        v = cfg.get("vpn") or {}
+        self.unknown_policy = v.get("unknown_destinations", "review")
+        self.unknown_min_bytes = int(v.get("unknown_min_bytes", 15_000_000))
+        self.unknown_min_seconds = float(v.get("unknown_min_seconds", 600))
         self.video_min_bytes = int((cfg.get("adult") or {}).get("video_min_bytes", 2_000_000))
         self.held: dict[tuple, int] = {}
         self.approved: set[tuple] = set()
@@ -201,6 +206,52 @@ class DownloadGuard:
             self.kill_flow(rec.proto, rec.client_ip, rec.tuple[2], rec.dst_ip, rec.dst_port)
         return rid
 
+    # ------------------------------------------------------------ heavy traffic to unknown destinations
+    def unknown_policy_for(self, group_cfg) -> str:
+        if not group_cfg or not group_cfg.get("filtered"):
+            return "off"
+        p = group_cfg.get("unknown_destinations") or self.unknown_policy
+        if p == "review" and self.reputation is not None and not self.reputation.has_popularity:
+            return "alert"          # without a popularity list, too much would look unknown
+        return p if p in ("review", "alert", "off") else "review"
+
+    def on_unknown(self, rec, act, feat, group_cfg):
+        """Any tunnel - self-hosted VPN, VPN routed through a CDN, Tor WebTunnel
+        bridge - must move a lot of data to *some* destination. For children,
+        heavy traffic to a destination that nothing explains is cut and held."""
+        if self.reputation is None or getattr(rec, "unk_state", None) is not None or rec.dl_state == "held":
+            return None
+        total = rec.bytes_up + rec.bytes_down
+        if total < self.unknown_min_bytes and not (rec.duration >= self.unknown_min_seconds and total >= 3_000_000):
+            return None
+        policy = self.unknown_policy_for(group_cfg)
+        if policy == "off":
+            rec.unk_state = "off"
+            return None
+        known, why = self.reputation.known(rec.domain, rec.device_id)
+        if known:
+            rec.unk_state = "known"
+            return None
+        site = self.site_key(rec.domain, rec.dst_ip)
+        reasons = [f"{total / 1e6:.0f} MB over {rec.duration / 60:.0f} min to {site}: {why}"]
+        if act is not None:
+            reasons.append(f"traffic pattern: {act.cls}")
+        score = 55
+        if policy == "alert":
+            rec.unk_state = "alerted"
+            self.alerts.emit("unknown_site_held", device_id=rec.device_id, client_ip=rec.client_ip,
+                             dst=rec.dst_ip, domain=site, base=score, action="noted",
+                             detail="Heavy traffic to a site nothing explains. " + "; ".join(reasons))
+            return "alerted"
+        rec.unk_state = "held"
+        rec.flagged = True
+        rid = self._hold(rec.device_id, rec.client_ip, site, rec.domain, rec.dst_ip, rec.dst_port, None,
+                         rec.bytes_down, feat.rate_down if feat else 0, score, reasons, "review_all",
+                         kind="unknown")
+        if self.inline and self.kill_flow:
+            self.kill_flow(rec.proto, rec.client_ip, rec.tuple[2], rec.dst_ip, rec.dst_port)
+        return rid
+
     # ------------------------------------------------------------ plain-HTTP downloads (inline)
     def check_http(self, ctx, pkt, req):
         """Return a hold reason if this HTTP request fetches a risky file."""
@@ -252,7 +303,13 @@ class DownloadGuard:
             action = "blocked (policy: block suspicious)"
         else:
             action = "held for your review"
-        if kind == "video":
+        if kind == "unknown":
+            self.alerts.emit("unknown_site_held", device_id=device_id, client_ip=client_ip, dst=dst_ip,
+                             domain=site, base=score, action=action,
+                             detail="Heavy traffic to a site nothing explains - the shape of a self-hosted "
+                                    "or CDN-routed VPN / Tor bridge, or a big download from a small site. "
+                                    + "; ".join(reasons))
+        elif kind == "video":
             self.alerts.emit("video_held", device_id=device_id, client_ip=client_ip, dst=dst_ip,
                              domain=site, base=score, action=action,
                              detail=f"Watching video from {site}, which isn't a known video service. "
