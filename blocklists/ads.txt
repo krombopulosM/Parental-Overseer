@@ -1,0 +1,10 @@
+# Sample ad / tracker blocklist.
+# Replace with a maintained list (e.g. StevenBlack hosts) for real coverage.
+# Format: one domain per line, or "0.0.0.0 domain" hosts-file lines.
+doubleclick.net
+googlesyndication.com
+google-analytics.com
+googletagmanager.com
+adservice.google.com
+ads.yahoo.com
+scorecardresearch.com

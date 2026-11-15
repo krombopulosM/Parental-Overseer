@@ -1,0 +1,23 @@
+# Parental Gateway configuration
+dns:
+  listen_host: 0.0.0.0
+  listen_port: 5353        # 53 on the Raspberry Pi; 5353 avoids needing admin on your PC
+  upstream_host: 1.1.1.1   # where we forward allowed lookups
+  upstream_port: 53
+
+web:
+  host: 127.0.0.1          # dashboard only reachable from this machine; set 0.0.0.0 on the Pi
+  port: 8080
+
+database: guardian.db
+
+# Category blocklists and which device groups they apply to.
+# Devices start in the 'default' group (unfiltered). Move a child's device
+# into the 'kids' group from the dashboard to apply the kids' blocklists.
+categories:
+  ads:
+    file: blocklists/ads.txt
+    groups: [kids, default]
+  adult:
+    file: blocklists/adult.txt
+    groups: [kids]

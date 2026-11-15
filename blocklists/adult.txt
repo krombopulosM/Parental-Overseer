@@ -1,0 +1,8 @@
+# Sample adult-content blocklist (applies to the 'kids' group only).
+# This is a tiny starter set — swap in a maintained, categorized list such as
+# the "porn" category from StevenBlack's hosts project or a Hagezi list.
+pornhub.com
+xvideos.com
+xnxx.com
+redtube.com
+youporn.com
