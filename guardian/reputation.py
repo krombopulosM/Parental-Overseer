@@ -46,17 +46,20 @@ def on_hosting_platform(name: str | None) -> bool:
 
 class Reputation:
     def __init__(self, cfg: dict, db, lists, guard=None):
-        r = cfg.get("reputation") or {}
         self.cfg, self.db, self.lists, self.guard = cfg, db, lists, guard
-        self.familiar_days = float(r.get("familiar_days", 60))
-        a, d = cfg.get("adult") or {}, cfg.get("downloads") or {}
-        self.extra_known = {x.lower() for x in (a.get("video_sites") or [])}
-        self.trusted_services = set(d.get("trusted_services") or [])
+        self.refresh_settings()
         self._familiar: dict[str, float] = {}
         self._good: dict[str, int] = {}
         self._bad: dict[str, str] = {}
         self._lock = threading.Lock()
         self.load()
+
+    def refresh_settings(self):
+        r = self.cfg.get("reputation") or {}
+        self.familiar_days = float(r.get("familiar_days", 60))
+        a, d = self.cfg.get("adult") or {}, self.cfg.get("downloads") or {}
+        self.extra_known = {x.lower() for x in (a.get("video_sites") or [])}
+        self.trusted_services = set(d.get("trusted_services") or [])
 
     # ------------------------------------------------------------ state
     def load(self):

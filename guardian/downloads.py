@@ -29,27 +29,32 @@ POLICIES = ("off", "review_suspicious", "review_all", "block_suspicious")
 
 class DownloadGuard:
     def __init__(self, cfg, db, lists, alerts, kill_flow=None):
-        d = cfg.get("downloads") or {}
         self.cfg, self.db, self.lists, self.alerts = cfg, db, lists, alerts
+        self.inline = cfg.get("mode") == "gateway"
+        self.kill_flow = kill_flow
+        self.adult = None                     # AdultGuard: unknown-video holds
+        self.reputation = None                # Reputation: unknown-destination holds
+        self.refresh_settings()
+        self.held: dict[tuple, int] = {}
+        self.approved: set[tuple] = set()
+        self._lock = threading.Lock()
+        self.reload()
+
+    def refresh_settings(self):
+        """(Re)read settings from the config - called again when the setup wizard changes them."""
+        cfg = self.cfg
+        d = cfg.get("downloads") or {}
         self.default_policy = d.get("policy", "review_suspicious")
         self.min_bytes = int(d.get("min_bytes", 5_000_000))
         self.min_rate = float(d.get("min_rate", 200_000))
         self.threshold = int(d.get("suspicious_score", 50))
         self.risky = {e.lower().lstrip(".") for e in d.get("risky_extensions") or []}
         self.trusted = set(d.get("trusted_services") or [])
-        self.inline = cfg.get("mode") == "gateway"
-        self.kill_flow = kill_flow
-        self.adult = None                     # AdultGuard: unknown-video holds
-        self.reputation = None                # Reputation: unknown-destination holds
         v = cfg.get("vpn") or {}
         self.unknown_policy = v.get("unknown_destinations", "review")
         self.unknown_min_bytes = int(v.get("unknown_min_bytes", 15_000_000))
         self.unknown_min_seconds = float(v.get("unknown_min_seconds", 600))
         self.video_min_bytes = int((cfg.get("adult") or {}).get("video_min_bytes", 2_000_000))
-        self.held: dict[tuple, int] = {}
-        self.approved: set[tuple] = set()
-        self._lock = threading.Lock()
-        self.reload()
 
     # ------------------------------------------------------------ state
     def reload(self):

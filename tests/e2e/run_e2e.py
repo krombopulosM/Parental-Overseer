@@ -427,6 +427,55 @@ def main():
         record(sec, "'your setup' summary reflects the live config", ss["mode"] == "gateway" and
                ss["adult"]["family_dns"] == ["198.51.100.54"], ss["adult"])
 
+        # ---- First-run setup wizard (driven through its API, as the dashboard does)
+        sec = "Setup wizard"
+        w = api("get", "/api/wizard")
+        chk = {c["title"]: c["status"] for c in w["environment"]["checks"]}
+        record(sec, "detects the internet-side port (wan0)", chk.get("Internet side: wan0") == "ok", chk)
+        record(sec, "detects the home-network port (lan0)", chk.get("Home network side: lan0") == "ok", chk)
+        record(sec, "firewall reported as loaded", chk.get("Firewall") == "ok", chk)
+        record(sec, "recognises the parent's own device", w["this_device"] == parent, w["this_device"])
+        record(sec, "gateway ports are not offered as web settings", "dns_port" not in
+               api("post", "/api/wizard/apply", {"values": {"dns_port": 5300}, "finish": False})["body"]["applied"])
+
+        def kid_lookup(name):
+            out = sh(nsx("pg-kid", f"{PY} -c \"from dnslib import DNSRecord; "
+                                   f"r=DNSRecord.parse(DNSRecord.question('{name}').send('10.50.0.1', 53, timeout=3)); "
+                                   f"print([str(a.rdata) for a in r.rr])\""), check=False)
+            return out.stdout.strip()
+        before = kid_lookup("archive.ph")
+        cats = [c for c in w["values"]["categories"] if c != "mirrors"]
+        r = api("post", "/api/wizard/apply", {"values": {"categories": cats}, "finish": False})
+        after = kid_lookup("archive.ph")
+        record(sec, "category change applies live, no restart (web archive unblocked for the kid)",
+               r["body"]["restart_required"] == [] and before != after and "0.0.0.0" not in after, (before, after))
+        api("post", "/api/wizard/apply", {"values": {"categories": cats + ["mirrors"]}, "finish": False})
+        record(sec, "and blocked again", kid_lookup("archive.ph") == before, before)
+
+        def restart_with(fail_open):
+            r = api("post", "/api/wizard/apply", {"values": {"fail_open": fail_open}})
+            api("post", "/api/system/restart")
+            time.sleep(2)
+            for _ in range(60):
+                if sh(nsx("pg-parent", "curl -s -o /dev/null -w %{http_code} http://10.50.0.1:8080/api/session"),
+                      check=False).stdout == "200":
+                    break
+                time.sleep(0.5)
+            return r["body"]["restart_required"]
+        need = restart_with(True)
+        record(sec, "fail-open/closed choice needs a restart", need == ["fail_open"], need)
+        w2 = api("get", "/api/wizard")
+        record(sec, "service restarted itself in place (same process) with the new setting",
+               gw.poll() is None and w2["values"]["fail_open"] is True and w2["complete"], w2["values"]["fail_open"])
+        restart_with(False)
+        time.sleep(2)
+        fw = [c for c in api("get", "/api/wizard")["environment"]["checks"] if c["title"] == "Firewall"]
+        record(sec, "inspector running again after two restarts", fw and fw[0]["status"] == "ok", fw)
+        rules = sh(nsx("pg-gw", "iptables -S FORWARD"), check=False).stdout
+        record(sec, "no stale fail-open queue rule left behind", "--queue-bypass" not in rules,
+               [r for r in rules.splitlines() if "NFQUEUE" in r])
+        run_suite("pg-kid", "kid_basic", sec + ": filtering works after the restart")
+
         # ---- Tamper resistance: kill the inspector
         gw.terminate()
         gw.wait(timeout=20)

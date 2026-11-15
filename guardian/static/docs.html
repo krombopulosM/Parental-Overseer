@@ -90,14 +90,42 @@ gateway, copying a parent's device identity, rogue network settings).</p>
 <h3>Wiring</h3>
 <p>ISP router → Pi's built-in Ethernet port. Pi's USB Ethernet adapter → Wi-Fi access point. Every device then connects to that access point.</p>
 <h3>Installing</h3>
-<p>On the Pi, from the project folder, run <code>sudo ./deploy/setup-pi.sh</code>. It installs everything, gives the
-LAN side the address <code>192.168.50.1</code>, hands out network settings to devices, starts the service and asks
-you for a dashboard password. The dashboard is then at <code>http://192.168.50.1:8080</code>.</p>
+<p>On the Pi, from the project folder, run <code>sudo ./deploy/setup-pi.sh</code>. It lists the Pi's network ports and
+asks which one goes to the internet (your ISP router) and which to your home (the access point) - suggesting the
+likely answers. It then installs everything, gives the home side the address <code>192.168.50.1</code>, hands out
+network settings to devices, starts the service and asks you for a dashboard password. The dashboard is then at
+<code>http://192.168.50.1:8080</code>. Running it again later is safe: it updates the program and lets you re-pick
+the ports, and keeps your password, history and settings.</p>
+<h3>The setup wizard</h3>
+<p>The first time you sign in to the dashboard, a short wizard walks you through the rest. Each step explains what
+its choices do:</p>
+<ol>
+  <li><b>How it runs</b> - checks the machine is ready: the internet and home ports, the firewall, administrator
+    rights, blocklists. On a PC it also asks which port DNS listens on and whether the dashboard can be opened from
+    other devices.</li>
+  <li><b>Protection level</b> - <b>Strict</b> (recommended: suspicious downloads, unknown video and heavy traffic
+    to unknown places are held for you; repeated bypass attempts pause the device), <b>Balanced</b> (the same
+    blocking, but unknowns are reported rather than stopped) or <b>Light</b> (blocks, reports, never holds or
+    pauses - for older teenagers).</li>
+  <li><b>Fine-tune</b> - every setting the level chose, individually.</li>
+  <li><b>What to block</b> - the site categories for children. Blocking the ways around the filter is always on.</li>
+  <li><b>Devices</b> - name the devices seen so far and put each in a group. The device you're using is suggested as
+    an adult's. You also choose what happens to new devices.</li>
+  <li><b>Bedtime</b> - an internet-off time for the children's groups (never adults).</li>
+  <li><b>Privacy</b> - how long history is kept, whether adults' activity is recorded, and (on the Pi) what happens if
+    the inspector ever stops.</li>
+</ol>
+<p>Most choices take effect the moment you press <b>Finish</b>. The few that can't change while the service runs
+(the DNS port and dashboard access on a PC, fail-open/closed on the Pi) make it restart itself - the page reconnects
+on its own after a few seconds, and you stay signed in. Choices are saved in <code>config.local.yaml</code> next to
+<code>config.yaml</code>. Run the wizard again any time from <b>System → Run setup again</b>. Which network port is
+which is deliberately <i>not</i> in the web wizard: one wrong click there would cut the dashboard off, so that stays
+in <code>setup-pi.sh</code>.</p>
 <h3>Then</h3>
 <ol>
   <li>Set the access point to access-point / bridge mode (no DHCP of its own).</li>
   <li>Turn off the ISP router's Wi-Fi and change its admin password.</li>
-  <li>Move your devices to <b>adults</b>, consoles to <b>consoles</b>; leave children's devices where they are.</li>
+  <li>If you skipped it in the wizard: move your devices to <b>adults</b>, consoles to <b>consoles</b>; leave children's devices where they are.</li>
   <li>Turn on <b>client / AP isolation</b> on the access point if it has the option (stops devices talking to each other directly).</li>
   <li>Keep the Pi and routers where children can't reach the cables.</li>
 </ol>

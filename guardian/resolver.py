@@ -304,8 +304,18 @@ class GuardianResolver(BaseResolver):
 
 def start_dns(resolver: GuardianResolver, host: str, port: int):
     logger = DNSLogger(log="-request,-reply,-truncated,-data,-recv,-send", prefix=False)
-    servers = [DNSServer(resolver, address=host, port=port, tcp=False, logger=logger),
-               DNSServer(resolver, address=host, port=port, tcp=True, logger=logger)]
+    # After a restart the previous process may hold the port for a moment
+    # (always on Windows, where a restart is a new process): retry briefly.
+    deadline = time.time() + 15
+    while True:
+        try:
+            servers = [DNSServer(resolver, address=host, port=port, tcp=False, logger=logger),
+                       DNSServer(resolver, address=host, port=port, tcp=True, logger=logger)]
+            break
+        except OSError:
+            if time.time() > deadline:
+                raise
+            time.sleep(0.5)
     for s in servers:
         s.start_thread()
     return servers

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import threading
@@ -20,6 +21,26 @@ class Auth:
         self._sessions: dict[str, float] = {}
         self._fails: dict[str, list] = {}
         self._lock = threading.Lock()
+        self._load_sessions()
+
+    # Sessions survive a restart (the setup wizard restarts the service). Only a
+    # hash of each token is stored, so reading the database doesn't sign anyone in.
+    @staticmethod
+    def _h(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def _load_sessions(self):
+        try:
+            saved = json.loads(self.db.get_setting("sessions") or "{}")
+        except ValueError:
+            saved = {}
+        now = time.time()
+        self._sessions = {k: float(v) for k, v in saved.items() if float(v) > now}
+
+    def _save_sessions(self):
+        now = time.time()
+        live = {k: v for k, v in self._sessions.items() if v > now}
+        self.db.set_setting("sessions", json.dumps(live))
 
     def has_password(self) -> bool:
         return bool(self.db.get_setting("admin_hash"))
@@ -32,6 +53,7 @@ class Auth:
         self.db.set_setting("admin_hash", f"pbkdf2_sha256${ITERATIONS}${salt.hex()}${digest.hex()}")
         with self._lock:
             self._sessions.clear()          # changing the password logs everyone out
+            self._save_sessions()
 
     def verify(self, password: str) -> bool:
         stored = self.db.get_setting("admin_hash")
@@ -63,20 +85,23 @@ class Auth:
             return None
         token = secrets.token_urlsafe(32)
         with self._lock:
-            self._sessions[token] = time.time() + SESSION_HOURS * 3600
+            self._sessions[self._h(token)] = time.time() + SESSION_HOURS * 3600
             self._fails.pop(ip, None)
+            self._save_sessions()
         return token
 
     def check(self, token: str | None) -> bool:
         if not token:
             return False
         with self._lock:
-            exp = self._sessions.get(token)
+            key = self._h(token)
+            exp = self._sessions.get(key)
             if exp is None or exp < time.time():
-                self._sessions.pop(token, None)
+                self._sessions.pop(key, None)
                 return False
             return True
 
     def logout(self, token: str | None):
         with self._lock:
-            self._sessions.pop(token or "", None)
+            if self._sessions.pop(self._h(token or ""), None) is not None:
+                self._save_sessions()

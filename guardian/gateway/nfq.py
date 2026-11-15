@@ -4,6 +4,7 @@ firewall answers with a TCP RST and the app fails fast instead of hanging)."""
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 
 from ..inspector import ACCEPT, RESET
@@ -49,7 +50,17 @@ class NfqRunner:
 
         def run():
             nfq = NetfilterQueue()
-            nfq.bind(self.queue_num, self._cb, max_len=8192)
+            for attempt in range(30):          # a restarting predecessor may still hold the queue
+                try:
+                    nfq.bind(self.queue_num, self._cb, max_len=8192)
+                    break
+                except OSError as e:
+                    self.error = f"can't bind queue {self.queue_num}: {e}"
+                    time.sleep(0.5)
+            else:
+                print(f"[nfq] {self.error} - children's connections wait (fail closed) until this is fixed")
+                return
+            self.error = None
             self.running = True
             try:
                 nfq.run(block=True)

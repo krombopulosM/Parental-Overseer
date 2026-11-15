@@ -261,7 +261,8 @@ python run.py
 ```
 
 Open **http://127.0.0.1:8080** and choose a password; first-time setup is only
-allowed from the machine itself. For traffic accounting on Windows, install
+allowed from the machine itself. The [setup wizard](#first-time-setup-wizard)
+then opens. For traffic accounting on Windows, install
 [Npcap](https://npcap.com) and run the terminal as administrator.
 
 Test DNS filtering without touching your system settings:
@@ -306,10 +307,13 @@ On the Pi (Raspberry Pi OS Bookworm, 64-bit):
 ```bash
 git clone <this repo> && cd parental-gateway
 sudo ./deploy/setup-pi.sh
-# different interface names?   sudo WAN_IF=eth0 LAN_IF=eth1 ./deploy/setup-pi.sh
+# unattended:   sudo WAN_IF=eth0 LAN_IF=eth1 ./deploy/setup-pi.sh
 ```
 
 The script:
+- lists the network interfaces and asks which faces the internet and which
+  faces your home, suggesting the likely answers (the one carrying the default
+  route is the internet side);
 - installs everything;
 - gives the LAN port `192.168.50.1` and runs DHCP on it;
 - creates a `parental-gateway` systemd service;
@@ -321,13 +325,33 @@ Then:
 
 1. Set the access point to AP/bridge mode (no DHCP or NAT of its own).
 2. **Turn off the ISP router's Wi-Fi and change its admin password.**
-3. In **Devices**, move your own devices into **adults**. Put consoles in
-   **consoles** (they need UDP for online games). Everything else stays filtered.
-4. Optionally add internet-off times under **Rules & schedules**.
+3. Sign in to the dashboard and follow the setup wizard (below).
 
 Forwarding is off at boot and only switches on once the firewall is loaded,
 so there's never an unfiltered window. Machine-specific settings live in
-`config.local.yaml`, which the setup script writes and git ignores.
+`config.local.yaml`, which the setup script and the wizard write (merging,
+never overwriting each other) and git ignores. Re-running the script is safe.
+
+## First-time setup wizard
+
+The first sign-in opens a step-by-step wizard (and **System → Run setup again**
+reopens it):
+
+| Step | What it sets |
+|---|---|
+| How it runs | Detects the platform, admin rights, interfaces, firewall, capture support and blocklists, and shows a pass/warn checklist. On a PC: DNS port (53 for real devices, 5353 for testing) and who can open the dashboard. On the Pi: the detected ports plus a house checklist. |
+| Protection level | **Strict** (recommended), **Balanced** or **Light** presets. |
+| Fine-tune | Adult-content mode, SafeSearch, YouTube Restricted Mode, family DNS, unknown video, downloads, unknown destinations, auto-pause after bypass attempts / network attacks. |
+| What to block | Categories for the kids, consoles and new-device groups (bypass is always on). |
+| Devices | Names and groups for devices already seen; the device you're using is suggested as an adult's; what happens to new devices. |
+| Bedtime | Internet-off window for the children's groups (never adults). |
+| Privacy | History retention, recording adults' activity, fail-open vs fail-closed (Pi). |
+
+Most settings apply live. DNS port, dashboard access and fail-open/closed need
+a restart, which the service does itself (systemd restarts it on the Pi; on a
+PC the process replaces itself) - the page reconnects and you stay signed in.
+Network interfaces are deliberately not editable from the web: a wrong choice
+would cut the dashboard off, so that stays in `setup-pi.sh`.
 
 ---
 
@@ -382,7 +406,7 @@ Categories, lists, detector thresholds and schedules are all in
 ## Tests
 
 ```bash
-pytest -q                               # 130 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult...)
+pytest -q                               # 136 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
@@ -400,7 +424,10 @@ starts, then denied. The adult-content layers are checked end to end, and so
 is the in-app guide. So are VPN and Tor servers that are on no list: an unlisted VPN
 caught by behaviour and then blocked by fingerprint on a second brand-new server,
 unlisted Tor relays, and a CDN-style tunnel held as an unknown destination.
-**162 checks pass.** Finally it kills the service and
+It also drives the setup wizard: interfaces detected, a category change taking
+effect live for the kid, and a real self-restart that must come back as the
+same process with the inspector running and no stale fail-open rule.
+**174 checks pass.** Finally it kills the service and
 confirms kids' access fails closed while the parent is unaffected. (The IPv6 router check is
 skipped on kernels booted without IPv6.)
 
@@ -426,7 +453,9 @@ guardian/
   static/docs.html     the in-app Guide
   gateway/             nftables ruleset, NFQUEUE runner
   lists.py             blocklist + VPN-server list downloads
-  webapp.py, static/   dashboard
+  settings.py          what the setup wizard can change: presets, config.local.yaml, live apply
+  environment.py       platform / interface / readiness detection for the wizard
+  webapp.py, static/   dashboard (static/wizard.js: the setup wizard)
 deploy/                setup-pi.sh, systemd unit
 tools/replay.py        run the inspector over a Wireshark capture
 tests/                 unit tests + e2e/

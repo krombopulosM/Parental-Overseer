@@ -703,7 +703,7 @@ views.rules = {
 views.system = {
   shell: () => `
     <div class="page-head"><div><h1>System</h1></div>
-      <div class="actions"><button id="sys-update">Update blocklists now</button></div></div>
+      <div class="actions"><button id="sys-wizard">Run setup again</button><button id="sys-update">Update blocklists now</button></div></div>
     <div class="tiles" id="sys-tiles"></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h2>Components</h2></div><div class="panel-body" id="sys-comp"></div></div>
@@ -715,6 +715,7 @@ views.system = {
     <div class="panel"><div class="panel-head"><h2>Blocklists</h2><div class="tools small muted" id="sys-lists-note"></div></div><div class="scroll" id="sys-lists"></div></div>
     <div class="panel"><div class="panel-head"><h2>Inspector counters</h2></div><div class="panel-body" id="sys-insp"></div></div>`,
   init() {
+    $("#sys-wizard").onclick = () => openWizard(1).catch(e => toast(e.message, 4000));
     $("#sys-update").onclick = () => act(() => post("/api/system/update-lists"), "Updating lists in the background…");
     $("#pw-form").onsubmit = e => {
       e.preventDefault();
@@ -852,5 +853,6 @@ async function start() {
   mb.textContent = sess.mode === "gateway" ? "Gateway mode" : "Monitor mode";
   mb.className = "badge " + (sess.mode === "gateway" ? "ok" : "info");
   await render();
+  if (!sess.setup_complete) openWizard().catch(e => toast(e.message, 4000));
 }
 start();

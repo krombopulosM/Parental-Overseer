@@ -266,6 +266,47 @@ class Guardian:
                 self.gateway.kill_device_flows(ip_of[mac])
         self.gateway.sync_ip_sets()
 
+    def reconfigure(self):
+        """Apply changed settings (setup wizard) to the running components.
+        The config dict was updated in place; components that copied values out
+        of it at start-up re-read them here."""
+        from .adult import AdultGuard
+        self.adult = AdultGuard(self.cfg, self.lists, self.alerts)
+        self.resolver.adult = self.inspector.adult = self.downloads.adult = self.adult
+        self.downloads.refresh_settings()
+        self.reputation.refresh_settings()
+        if self.monitor is not None:
+            self.monitor.log_trusted = bool(self.cfg["flows"].get("log_trusted_devices", True))
+        self.device_changed()
+
+    def restart(self, delay: float = 1.0):
+        """Restart the whole service so settings that need it (ports, dashboard
+        access) take effect. Under systemd we simply exit and systemd starts us
+        again; otherwise the process replaces itself with a fresh copy."""
+        import os
+
+        def go():
+            time.sleep(delay)
+            print("[restart] restarting to apply new settings")
+            try:
+                self.db.close()
+            except Exception:
+                pass
+            if os.environ.get("INVOCATION_ID"):          # running under systemd
+                os._exit(0)
+            # Close everything first: some handles (the kernel packet queue, made by a
+            # C library) would otherwise survive exec and block the new process.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            try:
+                maxfd = os.sysconf("SC_OPEN_MAX")
+            except (AttributeError, ValueError, OSError):
+                maxfd = 4096
+            os.closerange(3, maxfd)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        threading.Thread(target=go, name="restart", daemon=True).start()
+
     def device_changed(self):
         self.policy.reload()
         self.scheduler.reload()

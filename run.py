@@ -16,6 +16,21 @@ sys.path.insert(0, HERE)
 from guardian.config import load_config, resolve_path  # noqa: E402
 
 
+def wait_for_port(host: str, port: int, timeout: float = 15):
+    """After a restart the old process may still hold the dashboard port briefly."""
+    import socket
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket() as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((host, port))
+                return
+            except OSError:
+                time.sleep(0.5)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Parental Gateway")
     ap.add_argument("--config", default=os.path.join(HERE, "config.yaml"))
@@ -54,6 +69,7 @@ def main():
 
     import uvicorn
     web = cfg["web"]
+    wait_for_port(web["host"], int(web["port"]))
     print(f"[web] dashboard on http://{web['host']}:{web['port']}  (mode: {cfg['mode']})")
     try:
         uvicorn.run(create_app(g), host=web["host"], port=int(web["port"]), log_level="warning")

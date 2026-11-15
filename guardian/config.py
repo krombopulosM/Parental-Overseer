@@ -138,7 +138,11 @@ def normalize(cfg: dict) -> None:
             merged["require_sni"] = False
             merged["allow_udp"] = True
         merged["dns_consistency"] = _tristate(merged["dns_consistency"], "enforce")
-        cfg["groups"][name] = merged
+        if isinstance(g, dict):             # in place: running components may hold a reference
+            g.clear()
+            g.update(merged)
+        else:
+            cfg["groups"][name] = merged
     if cfg["default_group"] not in cfg["groups"]:
         raise ValueError(f"default_group '{cfg['default_group']}' is not defined in groups")
     cfg["dns"]["strip_https_records"] = _tristate(cfg["dns"]["strip_https_records"], "filtered")

@@ -178,8 +178,9 @@ table inet {TABLE} {{
 }}
 """
 
-    def _xt_rules(self) -> list[list[str]]:
-        bypass = ["--queue-bypass"] if self.fail_open else []
+    def _xt_rules(self, fail_open: bool | None = None) -> list[list[str]]:
+        fail_open = self.fail_open if fail_open is None else fail_open
+        bypass = ["--queue-bypass"] if fail_open else []
         return [  # listed bottom-up because each is inserted at position 1
             ["-m", "mark", "--mark", hex(M_INSPECT), "-j", "NFQUEUE", "--queue-num", "0", *bypass],
             ["-m", "mark", "--mark", hex(M_RESET), "-j", "DROP"],
@@ -187,14 +188,20 @@ table inet {TABLE} {{
         ]
 
     def _install_xt(self):
+        # The fail-open/closed choice can change between runs: never leave the
+        # other variant of the queue rule behind (a stale --queue-bypass rule in
+        # front would quietly turn a fail-closed gateway into a fail-open one).
+        stale = self._xt_rules(not self.fail_open)[0]
         for chain in ("FORWARD", "INPUT"):
+            while system.run(["iptables", "-D", chain, *stale], check=False).returncode == 0:
+                pass
             for rule in self._xt_rules():
                 if system.run(["iptables", "-C", chain, *rule], check=False).returncode != 0:
                     system.run(["iptables", "-I", chain, "1", *rule])
 
     def _remove_xt(self):
         for chain in ("FORWARD", "INPUT"):
-            for rule in self._xt_rules():
+            for rule in self._xt_rules() + self._xt_rules(not self.fail_open)[:1]:
                 while system.run(["iptables", "-D", chain, *rule], check=False).returncode == 0:
                     pass
 

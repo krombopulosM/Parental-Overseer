@@ -5,20 +5,52 @@
 #
 # Usage (from the project folder on the Pi):
 #   sudo ./deploy/setup-pi.sh
-# Override defaults with environment variables, e.g.:
+# It lists the network interfaces and asks which faces the internet and which
+# faces your home. Or answer up front with environment variables, e.g.:
 #   sudo WAN_IF=eth0 LAN_IF=eth1 LAN_IP=192.168.50.1 ./deploy/setup-pi.sh
 #
 # Safe to re-run: it updates the installed copy and leaves your database,
 # password and config.local.yaml alone.
 set -euo pipefail
 
-WAN_IF=${WAN_IF:-eth0}
-LAN_IF=${LAN_IF:-eth1}
+APP_DIR=${APP_DIR:-/opt/parental-gateway}
+LOCAL_CFG="$APP_DIR/config.local.yaml"
+
+# ---- which port is which? -------------------------------------------------
+# Defaults: what a previous run chose, else the interface carrying the default
+# route (internet side) and the first other wired interface (home side).
+prev() {  # value of "key: x", "key: [x]" or "key:\n  - x" in the existing local config
+  [ -f "$LOCAL_CFG" ] || return 0
+  awk -v k="$1" '
+    want { if ($1 == "-") { print $2; exit } else exit }
+    $1 == k":" { v = $2; gsub(/[][,]/, "", v); if (v != "") { print v; exit } want = 1 }' "$LOCAL_CFG"
+}
+ROUTE_IF=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+WIRED=$(for d in /sys/class/net/*; do n=${d##*/}; [ "$n" = lo ] && continue
+        [ -d "$d/wireless" ] && continue; [ -e "$d/device" ] && echo "$n"; done)
+DEF_WAN=$(prev wan_interface); DEF_WAN=${DEF_WAN:-${ROUTE_IF:-eth0}}
+DEF_LAN=$(prev lan_interfaces); DEF_LAN=${DEF_LAN:-$(echo "$WIRED" | grep -vx "$DEF_WAN" | head -1)}; DEF_LAN=${DEF_LAN:-eth1}
+if [ -t 0 ] && [ -z "${WAN_IF:-}" ] && [ -z "${LAN_IF:-}" ]; then
+  echo "Network interfaces on this Pi:"
+  for d in /sys/class/net/*; do n=${d##*/}; [ "$n" = lo ] && continue
+    kind=ethernet; [ -d "$d/wireless" ] && kind=wifi; [ -e "$d/device" ] || kind=virtual
+    addr=$(ip -4 -o addr show dev "$n" 2>/dev/null | awk '{print $4}' | paste -sd, -)
+    note=""; [ "$n" = "$ROUTE_IF" ] && note="  <- internet route goes this way"
+    printf "  %-12s %-9s %-6s %-18s%s\n" "$n" "$kind" "$(cat "$d/operstate" 2>/dev/null)" "${addr:--}" "$note"
+  done
+  echo
+  echo "The INTERNET side is the port cabled to your ISP router."
+  read -r -p "Internet-side interface [$DEF_WAN]: " WAN_IF
+  echo "The HOME side is the port cabled to your Wi-Fi access point / switch (often a USB Ethernet adapter)."
+  read -r -p "Home-network interface [$DEF_LAN]: " LAN_IF
+  [ "${WAN_IF:-$DEF_WAN}" != "${LAN_IF:-$DEF_LAN}" ] || { echo "The two sides must be different interfaces."; exit 1; }
+fi
+WAN_IF=${WAN_IF:-$DEF_WAN}
+LAN_IF=${LAN_IF:-$DEF_LAN}
 LAN_IP=${LAN_IP:-192.168.50.1}
 LAN_PREFIX=${LAN_PREFIX:-24}
 DHCP_START=${DHCP_START:-192.168.50.100}
 DHCP_END=${DHCP_END:-192.168.50.250}
-APP_DIR=${APP_DIR:-/opt/parental-gateway}
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 
 [ "$(id -u)" = 0 ] || { echo "Please run with sudo."; exit 1; }
@@ -40,23 +72,30 @@ python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
 "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt" -r "$APP_DIR/requirements-gateway.txt"
 
-if [ ! -f "$APP_DIR/config.local.yaml" ]; then
-  echo "==> Writing $APP_DIR/config.local.yaml"
-  cat > "$APP_DIR/config.local.yaml" <<EOF
-# Raspberry Pi overrides (deep-merged over config.yaml)
-mode: gateway
-dns:
-  listen_port: 53
-web:
-  host: 0.0.0.0
-  port: 8080
-gateway:
-  wan_interface: $WAN_IF
-  lan_interfaces: [$LAN_IF]
-  lan_ip: $LAN_IP
-  lan_subnets: [$LAN_NET]
-EOF
-fi
+echo "==> Writing $LOCAL_CFG (internet: $WAN_IF, home: $LAN_IF)"
+# Merge, don't overwrite: the dashboard's setup wizard keeps its choices in the same file.
+WAN_IF="$WAN_IF" LAN_IF="$LAN_IF" LAN_IP="$LAN_IP" LAN_NET="$LAN_NET" LOCAL_CFG="$LOCAL_CFG" \
+"$APP_DIR/.venv/bin/python" - <<'PY'
+import os, yaml
+path = os.environ["LOCAL_CFG"]
+cfg = {}
+if os.path.exists(path):
+    with open(path) as fh:
+        cfg = yaml.safe_load(fh) or {}
+cfg["mode"] = "gateway"
+cfg.setdefault("dns", {})["listen_port"] = 53
+web = cfg.setdefault("web", {})
+web["host"] = "0.0.0.0"
+web.setdefault("port", 8080)
+gw = cfg.setdefault("gateway", {})
+gw.update(wan_interface=os.environ["WAN_IF"], lan_interfaces=[os.environ["LAN_IF"]],
+          lan_ip=os.environ["LAN_IP"], lan_subnets=[os.environ["LAN_NET"]])
+with open(path + ".tmp", "w") as fh:
+    fh.write("# Machine-specific settings - written by setup-pi.sh and the dashboard's setup wizard.\n"
+             "# Deep-merged over config.yaml.\n")
+    yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=False)
+os.replace(path + ".tmp", path)
+PY
 
 echo "==> Kernel settings"
 cat > /etc/sysctl.d/90-parental-gateway.conf <<EOF
@@ -143,8 +182,9 @@ Finish the setup:
      and plug it into $LAN_IF. Every device must get its address from the Pi.
   2. Turn OFF the Wi-Fi on the ISP router and change its admin password - otherwise
      the kids can just join the ISP router's Wi-Fi and skip the Pi entirely.
-  3. In the dashboard, move your own devices into "adults". Everything else stays
-     filtered until you assign it.
+  3. Open the dashboard and sign in: the setup wizard walks you through the protection
+     level, what to block, whose devices are whose, bedtime and privacy.
+     Everything stays filtered until you assign it.
   4. Keep the Pi and the routers somewhere the kids can't reach: unplugging cables
      is the one bypass software can't stop.
 EOF

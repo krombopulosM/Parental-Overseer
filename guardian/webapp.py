@@ -21,7 +21,8 @@ from .services import registrable_domain, service_label
 COOKIE = "pg_session"
 _DOMAIN_RE = re.compile(r"^[a-z0-9*_.-]+\.[a-z0-9-]+$")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-_PUBLIC = {"/", "/static/app.js", "/static/style.css", "/api/session", "/api/login", "/api/setup"}
+_PUBLIC = {"/", "/static/app.js", "/static/wizard.js", "/static/style.css", "/api/session", "/api/login",
+           "/api/setup"}
 
 
 def _midnight() -> float:
@@ -69,7 +70,7 @@ def create_app(g) -> FastAPI:
 
     @app.get("/static/{name}")
     def static_file(name: str):
-        if name not in ("app.js", "style.css", "docs.html"):
+        if name not in ("app.js", "wizard.js", "style.css", "docs.html"):
             raise HTTPException(404)
         return FileResponse(os.path.join(static, name), headers={"Cache-Control": "no-store"})
 
@@ -79,6 +80,7 @@ def create_app(g) -> FastAPI:
         local = ip in ("127.0.0.1", "::1")
         return {"authenticated": auth.check(req.cookies.get(COOKIE)),
                 "needs_setup": not auth.has_password(), "setup_allowed": local,
+                "setup_complete": g.db.get_setting("setup_complete") is not None,
                 "mode": g.mode}
 
     @app.post("/api/setup")
@@ -729,6 +731,91 @@ def create_app(g) -> FastAPI:
             "fail_open": c["enforcement"].get("fail_open"),
             "poll": c["flows"].get("poll_interval"),
         }
+
+    # ------------------------------------------------------------ setup wizard
+    def wizard_bedtime():
+        try:
+            return json.loads(g.db.get_setting("wizard_bedtime") or "null")
+        except ValueError:
+            return None
+
+    @app.get("/api/wizard")
+    def wizard(req: Request):
+        from . import environment, settings
+        g.db.flush()
+        here_id = g.identity.device_id_for(client_ip(req))[0] if client_ip(req) else None   # look, don't register
+        devs = [{"device_id": d["device_id"], "label": d["label"], "name": d["name"], "hostname": d["hostname"],
+                 "ip": d["ip"], "mac": d["mac"], "group": d["group"], "group_set": d["group_set"],
+                 "online": d["online"], "last_seen": d["last_seen"]} for d in devices_view()]
+        return {
+            "complete": g.db.get_setting("setup_complete") is not None,
+            "mode": g.mode,
+            "presets": settings.PRESETS,
+            "categories": [{"key": k, "label": v[0], "description": v[1], "default": v[2]}
+                           for k, v in settings.CATEGORY_INFO.items() if k in (g.cfg.get("categories") or {})],
+            "groups": [{"name": n, "filtered": gc["filtered"], "description": gc.get("description", "")}
+                       for n, gc in g.cfg["groups"].items()],
+            "values": settings.current(g.cfg),
+            "bedtime": wizard_bedtime() or {"enabled": False, "start": "21:00", "end": "07:00",
+                                            "days": "sun,mon,tue,wed,thu", "groups": ["kids"]},
+            "environment": environment.detect(g.cfg, g),
+            "devices": devs,
+            "this_device": here_id,
+            "this_ip": client_ip(req),
+        }
+
+    @app.post("/api/wizard/apply")
+    async def wizard_apply(req: Request):
+        from . import settings
+        body = await req.json()
+        try:
+            result = settings.apply(g.cfg, body.get("values") or {})
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        g.db.flush()
+        for d in body.get("devices") or []:
+            did = d.get("device_id")
+            if not did:
+                continue
+            if "name" in d:
+                g.db.update_device(did, name=(d.get("name") or "").strip()[:60])
+            if "group" in d:
+                grp = d.get("group") or None
+                if grp is not None and grp not in g.cfg["groups"]:
+                    raise HTTPException(400, f"unknown group {grp}")
+                g.policy.set_device_group(did, grp)
+        bt = body.get("bedtime")
+        if bt is not None:
+            old = wizard_bedtime() or {}
+            for sid in old.get("schedule_ids") or []:
+                g.db.delete_schedule(sid)
+            ids = []
+            if bt.get("enabled"):
+                if not (_TIME_RE.match(bt.get("start", "")) and _TIME_RE.match(bt.get("end", ""))):
+                    raise HTTPException(400, "bedtime times must be HH:MM")
+                days = ",".join(x for x in (bt.get("days") or "").split(",")
+                                if x in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")) or \
+                    "mon,tue,wed,thu,fri,sat,sun"
+                for grp in bt.get("groups") or ["kids"]:
+                    if grp in g.cfg["groups"] and g.cfg["groups"][grp]["filtered"]:
+                        g.db.add_schedule("group", grp, days, bt["start"], bt["end"])
+                        ids.append(g.db.query_one("SELECT MAX(id) AS id FROM schedules")["id"])
+                bt = {**bt, "days": days}
+            g.db.set_setting("wizard_bedtime", json.dumps({**bt, "schedule_ids": ids}))
+        g.reconfigure()
+        if body.get("finish", True):
+            g.db.set_setting("setup_complete", str(time.time()))
+        return {"ok": True, **result}
+
+    @app.post("/api/wizard/skip")
+    def wizard_skip():
+        g.db.set_setting("setup_complete", str(time.time()))
+        return {"ok": True}
+
+    @app.post("/api/system/restart")
+    def restart():
+        g.restart()
+        return {"ok": True, "message": "restarting - the dashboard will be back in a few seconds"}
 
     # ------------------------------------------------------------ system
     @app.get("/api/system")
