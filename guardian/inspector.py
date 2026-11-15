@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from .protocols import (NEED_MORE, TCP_FIN, TCP_RST, classify_torrent_udp, classify_udp,
                         identify_tcp_stream, is_bittorrent_handshake, is_torrent_http, looks_like_tor_sni,
                         openvpn_confirm, parse_client_hello, parse_http_request, parse_ip)
+from .protections import BYPASS_CATEGORIES
+from .protections import on as prot
 from .services import is_ip_literal, name_matches, registrable_domain
 
 ACCEPT, DROP, RESET = "accept", "drop", "reset"
@@ -39,6 +41,17 @@ VPN_PORTS = {1194: "OpenVPN", 1195: "OpenVPN", 1196: "OpenVPN", 1197: "OpenVPN",
              5001: "Mullvad udp2tcp", 2408: "Cloudflare WARP", 992: "SoftEther VPN",
              5555: "SoftEther VPN", 1443: "VPN over alt-TLS port", 8443: "alt HTTPS / VPN"}
 WEB_PORTS = (80, 443)
+
+
+def port_protection(label: str) -> str:
+    """Which protection a well-known port's label belongs to."""
+    if label.startswith("Tor"):
+        return "tor"
+    if label.startswith("DNS-over"):
+        return "encrypted_dns"
+    if "proxy" in label and "VPN" not in label:
+        return "proxies"
+    return "vpn"
 
 
 @dataclass
@@ -132,6 +145,9 @@ class Inspector:
         self._probes: dict[str, collections.deque] = {}
         self._ttl: dict[str, collections.deque] = {}
 
+    def _p(self, ctx, key):
+        return prot(self.cfg, ctx.g, key)
+
     # ------------------------------------------------------------ entry point
     def inspect(self, raw: bytes, mac: str | None = None, now: float | None = None) -> Verdict:
         now = now or time.time()
@@ -154,7 +170,7 @@ class Inspector:
         if pkt.dst in self.allow_ips:
             self.labels.set(key, reason="destination marked as fine")
             return ALLOW
-        if pkt.syn_only:
+        if pkt.syn_only and self._p(ctx, "network_attacks"):
             self._track_ttl(ctx, pkt, now)
 
         # 1. destination lists (cheap, applies to everything)
@@ -164,7 +180,10 @@ class Inspector:
 
         if pkt.is_tcp and pkt.dport in WEB_PORTS:
             return self._tcp_web(ctx, pkt, key, now)
-        if pkt.is_udp and ctx.g.get("allow_udp"):
+        non_web = self._p(ctx, "non_web")
+        if non_web == "allow":
+            return self._open(ctx, pkt, key, now)
+        if pkt.is_udp and non_web == "games":
             return self._udp(ctx, pkt, key, now)
         return self._other_port(ctx, pkt, key)
 
@@ -185,6 +204,8 @@ class Inspector:
 
     def _check_destination(self, ctx, pkt, key) -> Verdict | None:
         hit = self.lists.ip_list_match(pkt.dst)
+        if hit and not self._p(ctx, {"tor": "tor", "vpn": "vpn", "doh": "encrypted_dns"}.get(hit, "vpn")):
+            hit = None
         if hit == "tor":
             return self._block(ctx, pkt, key, "tor", f"{pkt.dst}:{pkt.dport} is a Tor relay", action=DROP)
         if hit == "vpn":
@@ -196,14 +217,14 @@ class Inspector:
             return self._block(ctx, pkt, key, "doh_server",
                                f"{pkt.dst}:{pkt.dport} is a public encrypted-DNS resolver",
                                action=DROP)
-        if pkt.dst in self.dyn_blocked:
+        if pkt.dst in self.dyn_blocked and self._p(ctx, "behaviour"):
             return self._block(ctx, pkt, key, "tunnel_behaviour",
                                f"{pkt.dst} was blocked after tunnel-like behaviour",
                                action=DROP, alert=False)
         return None
 
     def _consistency_mode(self, ctx, dst) -> str:
-        mode = ctx.g.get("dns_consistency", "off")
+        mode = self._p(ctx, "direct_ip")
         if mode != "off" and dst in self.lists.exempt:
             return "off"
         return mode
@@ -240,7 +261,7 @@ class Inspector:
         if not pkt.payload:
             if fl.base is not None and not fl.got_payload:
                 fl.empty += 1
-                if fl.empty > 3:
+                if fl.empty > 3 and self._p(ctx, "disguised_tunnels"):
                     return self._block(ctx, pkt, key, "server_first",
                                        f"Server spoke first on port {pkt.dport}; web traffic never "
                                        f"does this (SSH/VPN-style protocol)", flow=fl)
@@ -260,7 +281,7 @@ class Inspector:
             if res is None:
                 return self._non_web_on_web_port(ctx, pkt, key, fl, buf, "TLS")
             if res is NEED_MORE:
-                if fl.buffered > 32768:
+                if fl.buffered > 32768 and self._p(ctx, "disguised_tunnels"):
                     return self._block(ctx, pkt, key, "protocol_violation",
                                        "Oversized/garbled TLS handshake", flow=fl)
                 return self._evasion_check(ctx, pkt, key, fl)
@@ -274,7 +295,7 @@ class Inspector:
         return self._decide_http(ctx, pkt, key, fl, res)
 
     def _non_web_on_web_port(self, ctx, pkt, key, fl, buf, expected) -> Verdict:
-        if is_bittorrent_handshake(buf):
+        if is_bittorrent_handshake(buf) and self._p(ctx, "torrents"):
             return self._block(ctx, pkt, key, "torrent",
                                f"BitTorrent peer connection to {pkt.dst} disguised on port {pkt.dport}",
                                flow=fl)
@@ -284,8 +305,12 @@ class Inspector:
             self.labels.set(key, domain=sorted(names)[0], domain_src="dns")
             return ALLOW
         label = identify_tcp_stream(buf)
-        base = 95 if any(w in label for w in ("WireGuard", "OpenVPN", "SOCKS")) else \
-            (60 if label == "unrecognised protocol" else None)
+        is_vpn = any(w in label for w in ("WireGuard", "OpenVPN"))
+        if not (self._p(ctx, "disguised_tunnels") or (is_vpn and self._p(ctx, "vpn"))
+                or ("SOCKS" in label and self._p(ctx, "proxies"))):
+            fl.verdict = ALLOW
+            return ALLOW
+        base = 95 if is_vpn or "SOCKS" in label else (60 if label == "unrecognised protocol" else None)
         v = self._block(ctx, pkt, key, "protocol_violation",
                         f"Port {pkt.dport} traffic that isn't {expected}: {label}", flow=fl, base=base)
         return v
@@ -293,7 +318,7 @@ class Inspector:
     def _evasion_check(self, ctx, pkt, key, fl) -> Verdict:
         # Past this many packets the gateway stops sending the connection to us;
         # an unfinished handshake at that point is a deliberate attempt to slip past.
-        if fl.pkts >= self.max_pkts:
+        if fl.pkts >= self.max_pkts and self._p(ctx, "disguised_tunnels"):
             return self._block(ctx, pkt, key, "evasion",
                                f"Handshake still incomplete after {fl.pkts} packets (split into "
                                f"tiny pieces to dodge inspection)", flow=fl)
@@ -313,7 +338,7 @@ class Inspector:
                 return self._block(ctx, pkt, key, kind, f"{what} {name}: {reason}",
                                    domain=registrable_domain(name), flow=fl, base=base)
         if d.block:
-            kind = "bypass_domain" if d.category == "bypass" else "dns_bypass_site"
+            kind = "bypass_domain" if d.category in BYPASS_CATEGORIES else "dns_bypass_site"
             return self._block(ctx, pkt, key, kind,
                                f"{what} {name} is blocked ({d.reason}); reached without our DNS",
                                domain=registrable_domain(name), flow=fl)
@@ -340,7 +365,7 @@ class Inspector:
         self.labels.set(key, domain=ch.sni, domain_src="sni", ja4=ch.ja4)
         rep = self.reputation
         if not ch.sni or ch.sni_is_ip:
-            if ctx.g.get("require_sni") and pkt.dst not in self.lists.exempt:
+            if self._p(ctx, "hidden_names") and pkt.dst not in self.lists.exempt:
                 if rep is not None:
                     rep.learn_bad(ch.ja4, f"a client that hid its site name (to {pkt.dst})", "no_sni")
                 return self._block(ctx, pkt, key, "no_sni",
@@ -349,13 +374,14 @@ class Inspector:
                                    + " - typical of VPN/proxy clients", flow=fl, ref=ch.ja4)
             fl.verdict = ALLOW
             return ALLOW
-        if looks_like_tor_sni(ch.sni) and not self.dnscache.names_for_ip(pkt.dst):
+        if self._p(ctx, "tor") and looks_like_tor_sni(ch.sni) and not self.dnscache.names_for_ip(pkt.dst):
             if rep is not None:
                 rep.learn_bad(ch.ja4, "Tor", "tor_sni")
             return self._block(ctx, pkt, key, "tor",
                                f"Tor relay handshake to {pkt.dst} (made-up site name {ch.sni}, never looked up)",
                                flow=fl, ref=ch.ja4)
-        if ch.sni in self.ech_names or registrable_domain(ch.sni) in self.ech_names:
+        if self._p(ctx, "hidden_names") and (ch.sni in self.ech_names or
+                                             registrable_domain(ch.sni) in self.ech_names):
             return self._block(ctx, pkt, key, "ech",
                                f"Encrypted Client Hello via {ch.sni} hides which site is being "
                                f"visited", domain=ch.sni, flow=fl)
@@ -366,7 +392,7 @@ class Inspector:
         if known:
             rep.note_good(ch.ja4)               # browsers and normal apps: never learned as tunnels
             return v
-        label = rep.bad_label(ch.ja4)
+        label = rep.bad_label(ch.ja4) if self._p(ctx, "vpn") else None
         if label:
             return self._block(ctx, pkt, key, "vpn_fingerprint",
                                f"The software connecting to {ch.sni} has the same TLS fingerprint as {label}, "
@@ -376,19 +402,19 @@ class Inspector:
 
     def _decide_http(self, ctx, pkt, key, fl, req) -> Verdict:
         self.labels.set(key, domain=req.host, domain_src="http")
-        if req.method == "CONNECT":
+        if req.method == "CONNECT" and self._p(ctx, "proxies"):
             return self._block(ctx, pkt, key, "http_proxy",
                                f"HTTP CONNECT to {req.target} (proxy tunnel)", flow=fl)
         if self.downloads is not None:
             held = self.downloads.check_http(ctx, pkt, req)
             if held:
                 return self._block(ctx, pkt, key, "download_held", held, alert=False, flow=fl)
-        if is_torrent_http(req.target):
+        if is_torrent_http(req.target) and self._p(ctx, "torrents"):
             return self._block(ctx, pkt, key, "torrent",
                                f"Torrent tracker announce to {req.host or pkt.dst}", flow=fl,
                                domain=registrable_domain(req.host) if req.host else None)
         if not req.host or is_ip_literal(req.host):
-            if ctx.g.get("require_sni") and pkt.dst not in self.lists.exempt:
+            if self._p(ctx, "hidden_names") and pkt.dst not in self.lists.exempt:
                 return self._block(ctx, pkt, key, "no_sni",
                                    f"HTTP request to {pkt.dst} without a site name", flow=fl)
             fl.verdict = ALLOW
@@ -404,10 +430,11 @@ class Inspector:
         fl.pkts += 1
         if fl.verdict is not None:
             return fl.verdict
-        tsig = classify_torrent_udp(pkt.payload)
+        torrents = self._p(ctx, "torrents")
+        tsig = classify_torrent_udp(pkt.payload) if torrents else None
         if tsig:
             return self._block(ctx, pkt, key, "torrent", f"{tsig} traffic to {pkt.dst}:{pkt.dport}", flow=fl)
-        if fl.pkts == 1 and pkt.dport > 1024:
+        if torrents and fl.pkts == 1 and pkt.dport > 1024:
             self._track_fanout(ctx, pkt, now, self.fanout_peers * 2)
         sig = classify_udp(pkt.payload, pkt.dport)
         if fl.pkts == 1:
@@ -417,14 +444,15 @@ class Inspector:
         if sig == "STUN":
             fl.saw_stun = True
         self.labels.set(key, proto_hint=sig)
-        if sig in ("WireGuard", "OpenVPN", "IPsec/IKE"):
+        vpn = self._p(ctx, "vpn")
+        if vpn and sig in ("WireGuard", "OpenVPN", "IPsec/IKE"):
             return self._block(ctx, pkt, key, "blocked_udp",
                                f"{sig} VPN handshake to {pkt.dst}:{pkt.dport}", flow=fl)
-        if sig == "DTLS" and not fl.saw_stun:
+        if vpn and sig == "DTLS" and not fl.saw_stun:
             return self._block(ctx, pkt, key, "blocked_udp",
                                f"DTLS VPN (AnyConnect/OpenConnect-style) to {pkt.dst}:{pkt.dport}",
                                flow=fl)
-        if sig == "QUIC":
+        if sig == "QUIC" and self._p(ctx, "hidden_names"):
             # Not an attack - just push browsers back to TCP where the site name is visible.
             fl.verdict = Verdict(DROP, "QUIC disabled for filtered devices", "quic")
             self.stats["quic_dropped"] += 1
@@ -434,12 +462,13 @@ class Inspector:
     # ------------------------------------------------------------ everything else (always dropped)
     def _other_port(self, ctx, pkt, key) -> Verdict:
         proto = "UDP" if pkt.is_udp else "TCP"
-        if pkt.is_udp:
+        torrents = self._p(ctx, "torrents")
+        if pkt.is_udp and torrents:
             tsig = classify_torrent_udp(pkt.payload)
             if tsig:
                 return self._block(ctx, pkt, key, "torrent", f"{tsig} traffic to {pkt.dst}:{pkt.dport}",
                                    action=DROP)
-        if pkt.dport > 1024 and pkt.dport not in VPN_PORTS:
+        if torrents and pkt.dport > 1024 and pkt.dport not in VPN_PORTS:
             self._track_fanout(ctx, pkt, time.time(), self.fanout_peers)
         sig = classify_udp(pkt.payload, pkt.dport) if pkt.is_udp else None
         if sig == "QUIC" or (pkt.is_udp and pkt.dport == 443 and sig is None):
@@ -448,7 +477,7 @@ class Inspector:
         label = sig if sig in ("WireGuard", "IPsec/IKE") else VPN_PORTS.get(pkt.dport)
         if sig == "OpenVPN?" and pkt.dport in VPN_PORTS:
             label = "OpenVPN"
-        if label:
+        if label and self._p(ctx, port_protection(label)):
             kind = "blocked_udp" if pkt.is_udp and sig else "blocked_port"
             sev = "high" if sig in ("WireGuard", "IPsec/IKE") or label == "OpenVPN" else "medium"
             return self._block(ctx, pkt, key, kind, f"{label} attempt to {pkt.dst} ({proto} "
@@ -457,6 +486,29 @@ class Inspector:
         self.stats["other_port_dropped"] += 1
         self.labels.set(key, verdict="blocked", reason=f"{proto} port {pkt.dport} not allowed")
         return Verdict(DROP, f"{proto} port {pkt.dport} not allowed", "port")
+
+    # ------------------------------------------------------------ "allow everything" groups
+    def _open(self, ctx, pkt, key, now) -> Verdict:
+        """Non-web traffic is allowed for this group, but still checked for the
+        signatures of the protections that are on (the firewall sends the first
+        few packets of each connection here)."""
+        if pkt.is_udp:
+            v = self._udp(ctx, pkt, key, now)
+            if v is not ALLOW:
+                return v
+        elif self._p(ctx, "torrents") and pkt.payload and is_bittorrent_handshake(pkt.payload):
+            return self._block(ctx, pkt, key, "torrent",
+                               f"BitTorrent peer connection to {pkt.dst}:{pkt.dport}", action=DROP)
+        elif self._p(ctx, "torrents") and pkt.syn_only and pkt.dport > 1024 and pkt.dport not in VPN_PORTS:
+            self._track_fanout(ctx, pkt, now, self.fanout_peers * 2)
+        sig = classify_udp(pkt.payload, pkt.dport) if pkt.is_udp else None
+        label = sig if sig in ("WireGuard", "IPsec/IKE") else VPN_PORTS.get(pkt.dport)
+        if label and self._p(ctx, port_protection(label)):
+            proto = "UDP" if pkt.is_udp else "TCP"
+            return self._block(ctx, pkt, key, "blocked_udp" if pkt.is_udp and sig else "blocked_port",
+                               f"{label} attempt to {pkt.dst} ({proto} {pkt.dport}) blocked",
+                               action=DROP, severity="high" if sig else "medium")
+        return ALLOW
 
     # ------------------------------------------------------------ behaviour trackers
     @staticmethod
@@ -487,14 +539,15 @@ class Inspector:
         dq.append((now, (proto, pkt.dport)))
         ports = {p for _, p in dq}
         self.stats["gateway_probe"] += 1
+        report = self.alerts is not None and self._p(ctx, "network_attacks")
         if len(ports) >= self.scan_ports:
-            if self.alerts:
+            if report:
                 self.alerts.emit("port_scan", device_id=ctx.device_id, client_ip=ctx.ip, dst=pkt.dst,
                                  detail=f"Probed {len(ports)} different ports on the gateway within a "
                                         f"minute (e.g. {', '.join(f'{p}/{n}' for p, n in sorted(ports)[:6])})"
                                         f" - someone is looking for a way in.")
             dq.clear()
-        elif pkt.dport in (22, int(self.cfg["web"]["port"])) and self.alerts:
+        elif pkt.dport in (22, int(self.cfg["web"]["port"])) and report:
             what = "SSH" if pkt.dport == 22 else "dashboard"
             self.alerts.emit("gateway_probe", device_id=ctx.device_id, client_ip=ctx.ip, dst=pkt.dst,
                              detail=f"Tried to open the gateway's {what} ({proto} {pkt.dport}); only "
@@ -530,6 +583,8 @@ class Inspector:
             return
         now = now or time.time()
         ctx = self.policy.context(pkt.src)
+        if ctx.filtered and not self._p(ctx, "torrents"):
+            return
         sig = None
         if pkt.is_udp:
             sig = classify_torrent_udp(pkt.payload)

@@ -12,6 +12,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from .protections import BYPASS_CATEGORIES, CATEGORY_FOR
+from .protections import on as prot
 from .services import normalize_name
 
 
@@ -135,7 +137,32 @@ class Policy:
         for r in mine:
             if r["action"] == "block" and self._match(r["pattern"], name):
                 return Decision(True, f"block rule: {r['pattern']}", "rule")
-        cat = self.lists.category_match(name, ctx.g.get("categories") or [])
+        if ctx.filtered:
+            v = self._bypass_decision(ctx, name)
+            if v is not None:
+                return v
+        cats = [c for c in ctx.g.get("categories") or [] if c not in BYPASS_CATEGORIES]
+        cat = self.lists.category_match(name, cats)
         if cat:
             return Decision(True, f"category: {cat}", cat)
         return Decision(False, "")
+
+    _BYPASS_LABEL = {"tor": "Tor", "doh": "encrypted DNS", "vpn": "VPN", "proxy": "proxy",
+                     "bypass": "VPN / proxy / bypass service"}
+
+    def _bypass_decision(self, ctx, name) -> Decision | None:
+        """VPN / Tor / proxy / encrypted-DNS sites follow their protection switch.
+        A name on a specific list whose protection is off is let through even if
+        the broader community list also has it."""
+        for key, cat in CATEGORY_FOR.items():
+            if self.lists.category_match(name, [cat]):
+                if prot(self.cfg, ctx.g, key):
+                    return Decision(True, f"{self._BYPASS_LABEL[cat]} site", cat)
+                return None                     # switched off: skip the community list too
+        if (prot(self.cfg, ctx.g, "vpn") or prot(self.cfg, ctx.g, "proxies")) and \
+                self.lists.category_match(name, ["bypass"]):
+            return Decision(True, "VPN / proxy / bypass service", "bypass")
+        return None
+
+    def prot(self, ctx, key):
+        return prot(self.cfg, ctx.g, key)

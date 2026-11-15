@@ -17,14 +17,15 @@ import time
 import yaml
 
 from .config import normalize
+from .protections import BYPASS_CATEGORIES, PROTECTIONS
+from .protections import DEFAULTS as PROTECTION_DEFAULTS
+from .protections import _norm as _norm_protection
 
 FILTERED_GROUPS = ("kids", "quarantine", "consoles")
 DEFAULT_FAMILY_DNS = ["1.1.1.3", "1.0.0.3"]
 
 CATEGORY_INFO = {
     "adult": ("Adult content", "Pornography and other explicit sites.", True),
-    "bypass": ("VPNs, proxies, Tor, encrypted DNS", "The services children use to get around the filter. "
-               "Always blocked for filtered devices.", True),
     "gambling": ("Gambling", "Betting, casinos, lotteries.", True),
     "torrent": ("Torrents", "Torrent sites, trackers and clients.", True),
     "ads": ("Ads & trackers", "Advertising and tracking - fewer pop-ups and fewer ad-driven redirects.", True),
@@ -45,8 +46,8 @@ PRESETS = {
                    "repeated bypass attempts pause the device.",
         "values": {"adult_mode": "strict", "safesearch": True, "youtube": "strict", "family_dns": True,
                    "unknown_video": "review", "downloads": "review_suspicious", "unknown_destinations": "review",
-                   "escalation_pause": 15, "tamper_pause": 30,
-                   "categories": ["adult", "bypass", "gambling", "torrent", "ads", "mirrors", "unsafe_search",
+                   "escalation_pause": 15, "tamper_pause": 30, "protections": dict(PROTECTION_DEFAULTS),
+                   "categories": ["adult", "gambling", "torrent", "ads", "mirrors", "unsafe_search",
                                   "piracy"]},
     },
     "balanced": {
@@ -55,8 +56,8 @@ PRESETS = {
                    "destinations are reported rather than stopped, YouTube is moderately restricted.",
         "values": {"adult_mode": "standard", "safesearch": True, "youtube": "moderate", "family_dns": True,
                    "unknown_video": "alert", "downloads": "review_suspicious", "unknown_destinations": "alert",
-                   "escalation_pause": 15, "tamper_pause": 30,
-                   "categories": ["adult", "bypass", "gambling", "torrent", "ads", "mirrors", "unsafe_search"]},
+                   "escalation_pause": 15, "tamper_pause": 30, "protections": dict(PROTECTION_DEFAULTS),
+                   "categories": ["adult", "gambling", "torrent", "ads", "mirrors", "unsafe_search"]},
     },
     "light": {
         "label": "Light",
@@ -64,8 +65,8 @@ PRESETS = {
                    "but never holds downloads or pauses devices. Good for older teenagers.",
         "values": {"adult_mode": "standard", "safesearch": True, "youtube": "moderate", "family_dns": True,
                    "unknown_video": "off", "downloads": "off", "unknown_destinations": "off",
-                   "escalation_pause": 0, "tamper_pause": 0,
-                   "categories": ["adult", "bypass", "gambling", "torrent"]},
+                   "escalation_pause": 0, "tamper_pause": 0, "protections": dict(PROTECTION_DEFAULTS),
+                   "categories": ["adult", "gambling", "torrent"]},
     },
 }
 
@@ -86,6 +87,7 @@ _PATHS = {
     "fail_open": (("enforcement", "fail_open"), True),
     "dns_port": (("dns", "listen_port"), True),
     "web_host": (("web", "host"), True),
+    "tamper_watch": (("tamper", "enabled"), True),
 }
 
 _CHOICES = {
@@ -127,7 +129,9 @@ def current(cfg: dict) -> dict:
     for key, (path, _) in _PATHS.items():
         vals[key] = _get(cfg, path)
     vals["family_dns"] = bool(vals["family_dns"])
-    vals["categories"] = list(_get(cfg, ("groups", "kids", "categories"), []) or [])
+    vals["categories"] = [c for c in _get(cfg, ("groups", "kids", "categories"), []) or []
+                          if c not in BYPASS_CATEGORIES]
+    vals["protections"] = dict(cfg.get("protections") or PROTECTION_DEFAULTS)
     return vals
 
 
@@ -140,15 +144,17 @@ def validate(values: dict, cfg: dict) -> dict:
     out = {}
     for key, val in values.items():
         if key == "categories":
-            cats = [c for c in val if c in (cfg.get("categories") or {}) or c in CATEGORY_INFO]
-            if "bypass" not in cats:
-                cats.append("bypass")          # the way around the filter is never optional
-            out[key] = cats
+            out[key] = [c for c in val if (c in (cfg.get("categories") or {}) or c in CATEGORY_INFO)
+                        and c not in BYPASS_CATEGORIES]     # those follow the protection switches
+        elif key == "protections":
+            if not isinstance(val, dict):
+                raise ValueError("protections: expected a set of switches")
+            out[key] = {k: validate_protection(k, v) for k, v in val.items()}
         elif key in _CHOICES:
             if val not in _CHOICES[key]:
                 raise ValueError(f"{key}: choose one of {', '.join(_CHOICES[key])}")
             out[key] = val
-        elif key in ("safesearch", "family_dns", "fail_open", "log_trusted"):
+        elif key in ("safesearch", "family_dns", "fail_open", "log_trusted", "tamper_watch"):
             out[key] = bool(val)
         elif key in ("escalation_pause", "tamper_pause"):
             out[key] = max(0, min(24 * 60, int(val)))
@@ -179,11 +185,41 @@ def to_overrides(values: dict, cfg: dict) -> dict:
                 if g in cfg["groups"]:
                     _set(over, ("groups", g, "categories"), list(val))
             continue
+        if key == "protections":
+            over["protections"] = dict(val)
+            continue
         if key == "family_dns":
             existing = _get(cfg, ("adult", "family_dns")) or []
             val = (existing or DEFAULT_FAMILY_DNS) if val else []
         _set(over, _PATHS[key][0], val)
     return over
+
+
+def validate_protection(key: str, value):
+    if key not in PROTECTIONS:
+        raise ValueError(f"unknown protection {key}")
+    choices = PROTECTIONS[key].get("choices")
+    if choices:
+        if value not in [c[0] for c in choices]:
+            raise ValueError(f"{key}: choose one of {', '.join(c[0] for c in choices)}")
+        return value
+    if not isinstance(value, bool):
+        raise ValueError(f"{key}: expected on/off")
+    return value
+
+
+def set_group_protection(cfg: dict, group: str, key: str, value):
+    """Override one protection for one group (value None = use the house-wide setting).
+    Saved to config.local.yaml and applied at once."""
+    if group not in cfg["groups"]:
+        raise ValueError(f"unknown group {group}")
+    if not cfg["groups"][group].get("filtered"):
+        raise ValueError(f"{group} isn't filtered - protections don't apply to it")
+    if value is not None:
+        value = validate_protection(key, value)
+    save_local(cfg, {"groups": {group: {"protections": {key: value}}}})
+    cfg["groups"][group].setdefault("protections", {})[key] = _norm_protection(key, value)
+    normalize(cfg)
 
 
 def restart_needed(values: dict, cfg: dict) -> list[str]:

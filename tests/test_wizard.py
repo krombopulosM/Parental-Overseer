@@ -33,10 +33,16 @@ def client(tmp_path):
     return g, c, restarts
 
 
-def test_validate_forces_bypass_and_checks_choices(tmp_path):
+def test_validate_categories_protections_and_choices(tmp_path):
     cfg = _cfg(tmp_path)
-    v = settings.validate({"categories": ["adult", "nonsense"], "downloads": "review_all"}, cfg)
-    assert v["categories"] == ["adult", "bypass"]
+    v = settings.validate({"categories": ["adult", "nonsense", "bypass"], "downloads": "review_all",
+                           "protections": {"tor": False, "non_web": "games"}}, cfg)
+    assert v["categories"] == ["adult"]          # VPN/Tor/proxy sites follow the protection switches
+    assert v["protections"] == {"tor": False, "non_web": "games"}
+    with pytest.raises(ValueError):
+        settings.validate({"protections": {"tor": "maybe"}}, cfg)
+    with pytest.raises(ValueError):
+        settings.validate({"protections": {"teleport": True}}, cfg)
     with pytest.raises(ValueError):
         settings.validate({"downloads": "maybe"}, cfg)
     with pytest.raises(ValueError):
@@ -55,7 +61,8 @@ def test_apply_writes_local_config_and_applies_live(tmp_path):
     assert cfg["retention_days"] == 14
     assert cfg["dns"]["listen_port"] != 5300                 # needs the restart first
     assert cfg["groups"]["kids"] is groups_obj                # updated in place
-    assert cfg["groups"]["quarantine"]["categories"] == ["adult", "bypass", "gambling", "torrent"]
+    assert cfg["groups"]["quarantine"]["categories"] == ["adult", "gambling", "torrent"]
+    assert cfg["protections"]["vpn"] is True
     assert cfg["adult"]["family_dns"]
     local = yaml.safe_load(open(tmp_path / "config.local.yaml"))
     assert local["dns"]["listen_port"] == 5300
@@ -92,7 +99,7 @@ def test_wizard_flow(client):
     assert g.downloads.default_policy == "review_suspicious"
     assert g.adult.unknown_video == "alert"
     assert g.resolver.adult is g.adult and g.inspector.adult is g.adult and g.downloads.adult is g.adult
-    assert g.cfg["groups"]["kids"]["categories"] == ["adult", "gambling", "bypass"]
+    assert g.cfg["groups"]["kids"]["categories"] == ["adult", "gambling"]
     dev = g.db.get_device("aa:bb:cc:00:00:01")
     assert dev["name"] == "Sam's tablet" and dev["group_name"] == "kids"
     scheds = g.db.list_schedules()
@@ -143,3 +150,24 @@ def test_sessions_survive_restart_but_not_password_change(tmp_path):
     b.set_password("anotherpassword")
     assert not Auth(db).check(tok2)
     db.close()
+
+
+def test_protections_api(client):
+    g, c, _ = client
+    p = c.get("/api/protections").json()
+    assert {d["key"] for d in p["definitions"]} >= {"vpn", "tor", "non_web"}
+    consoles = next(x for x in p["groups"] if x["name"] == "consoles")
+    assert consoles["overrides"]["non_web"] == "games" and consoles["effective"]["tor"] is True
+    # house-wide Tor off, then back on for consoles only
+    r = c.post("/api/protections", headers=H, json={"group": "all", "key": "tor", "value": False})
+    assert r.status_code == 200 and r.json()["global"]["tor"] is False
+    r = c.post("/api/protections", headers=H, json={"group": "consoles", "key": "tor", "value": True})
+    eff = {x["name"]: x["effective"] for x in r.json()["groups"]}
+    assert eff["consoles"]["tor"] is True and eff["kids"]["tor"] is False
+    r = c.post("/api/protections", headers=H, json={"group": "consoles", "key": "tor", "value": None})
+    assert next(x for x in r.json()["groups"] if x["name"] == "consoles")["effective"]["tor"] is False
+    assert c.post("/api/protections", headers=H, json={"group": "adults", "key": "tor", "value": True}).status_code == 400
+    assert c.post("/api/protections", headers=H, json={"group": "all", "key": "tor", "value": None}).status_code == 400
+    # the wizard carries them too
+    w = c.get("/api/wizard").json()
+    assert w["values"]["protections"]["tor"] is False and w["protections"]

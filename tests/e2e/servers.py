@@ -146,6 +146,7 @@ def main(cert, key):
     tcp(("192.168.1.1", 80), HTTPHandler)
     tcp(("198.51.100.80", 443), EchoHandler)
     tcp(("198.51.100.77", 1194), EchoHandler)
+    tcp(("198.51.100.91", 1194), EchoHandler)          # protection-switch tests (never allow-listed)
     tcp(("198.51.100.78", 443), ServerFirstHandler)
     for port in (51820, 3074, 443):
         u = socketserver.ThreadingUDPServer(("198.51.100.77", port), UDPEcho)

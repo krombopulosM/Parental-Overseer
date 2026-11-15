@@ -44,6 +44,7 @@ DEFAULTS: dict = {
         "inspect_packets": 10,
         "protocol_exempt_domains": ["whatsapp.net", "whatsapp.com"],
     },
+    "protections": {},                 # filled from protections.DEFAULTS in normalize()
     "torrent": {"fanout_peers": 25, "window": 60},
     "reputation": {"popularity_urls": [], "popularity_files": [], "popular_top": 200000, "familiar_days": 60},
     "vpn": {"unknown_destinations": "review", "unknown_min_bytes": 15_000_000, "unknown_min_seconds": 600,
@@ -88,8 +89,7 @@ DEFAULTS: dict = {
     },
 }
 
-_GROUP_DEFAULTS = {"filtered": True, "categories": [], "allow_udp": False,
-                   "require_sni": True, "dns_consistency": "enforce"}
+_GROUP_DEFAULTS = {"filtered": True, "categories": []}
 
 
 def deep_merge(base: dict, over: dict) -> dict:
@@ -123,6 +123,10 @@ def load_config(path: str | None = None) -> dict:
         with open(local, "r", encoding="utf-8") as fh:
             cfg = deep_merge(cfg, yaml.safe_load(fh) or {})
     cfg = deep_merge(DEFAULTS, cfg)
+    from .protections import convert_legacy
+    for g in (cfg.get("groups") or {}).values():
+        if isinstance(g, dict):
+            convert_legacy(g)
     cfg["__base__"] = base_dir
     cfg["__path__"] = path
     normalize(cfg)
@@ -133,16 +137,13 @@ def normalize(cfg: dict) -> None:
     cfg["mode"] = str(cfg.get("mode", "monitor")).lower()
     for name, g in list(cfg["groups"].items()):
         merged = deep_merge(_GROUP_DEFAULTS, g or {})
-        if not merged["filtered"]:
-            merged["dns_consistency"] = "off"
-            merged["require_sni"] = False
-            merged["allow_udp"] = True
-        merged["dns_consistency"] = _tristate(merged["dns_consistency"], "enforce")
         if isinstance(g, dict):             # in place: running components may hold a reference
             g.clear()
             g.update(merged)
         else:
             cfg["groups"][name] = merged
+    from .protections import normalize as normalize_protections
+    normalize_protections(cfg)
     if cfg["default_group"] not in cfg["groups"]:
         raise ValueError(f"default_group '{cfg['default_group']}' is not defined in groups")
     cfg["dns"]["strip_https_records"] = _tristate(cfg["dns"]["strip_https_records"], "filtered")

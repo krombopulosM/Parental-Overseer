@@ -108,7 +108,9 @@ its choices do:</p>
     blocking, but unknowns are reported rather than stopped) or <b>Light</b> (blocks, reports, never holds or
     pauses - for older teenagers).</li>
   <li><b>Fine-tune</b> - every setting the level chose, individually.</li>
-  <li><b>What to block</b> - the site categories for children. Blocking the ways around the filter is always on.</li>
+  <li><b>What to block</b> - the site categories for children.</li>
+  <li><b>Ways around</b> - each anti-bypass protection (VPNs, Tor, proxies, encrypted DNS, disguised tunnels and the
+    rest) can be switched on or off; each says what switching it off allows. All are on in every preset.</li>
   <li><b>Devices</b> - name the devices seen so far and put each in a group. The device you're using is suggested as
     an adult's. You also choose what happens to new devices.</li>
   <li><b>Bedtime</b> - an internet-off time for the children's groups (never adults).</li>
@@ -240,6 +242,31 @@ something that slips past one is caught by the next.</p>
 <tr><td>A VPN or Tor server that isn't on any list</td><td>Blocked by how it works, not by its address - see "Targeting the technology, not server lists".</td></tr>
 <tr><td>Anything else that hides inside genuine encryption</td><td>Heavy traffic to an unknown destination is held for review; the <b>behaviour detector</b> spots a long, heavy connection carrying most of a device's traffic while the device stops making DNS lookups; and once caught, the tunnel software's fingerprint is blocked on every server.</td></tr>
 </tbody></table>
+
+<h3 id="bypass-switches">Switching protections on and off</h3>
+<p>Every protection above can be switched off - for the whole house, or for one group (for example: allow Tor for an
+older teenager's group but keep it blocked for the younger ones). Change them on the <b>Rules</b> page, or in the setup
+wizard's <i>Ways around</i> step. Each switch covers everything that stops that one route, at every level - the site,
+the servers, the protocol and the fingerprint - so switching it off really does open that route, and nothing else.</p>
+<table>
+<thead><tr><th>Protection</th><th>What it covers</th><th>Switched off, this works</th></tr></thead>
+<tbody>
+<tr><td><b>VPNs</b></td><td>VPN websites and sign-in servers, known VPN server addresses, VPN protocols (WireGuard, OpenVPN, IPsec, AnyConnect), learned VPN-app fingerprints</td><td>VPN apps - after which the gateway can't see what the device does</td></tr>
+<tr><td><b>Tor</b></td><td>The Tor website, every running relay, Tor's own handshake</td><td>Tor Browser, including a copy from a USB stick</td></tr>
+<tr><td><b>Proxies</b></td><td>Web-proxy sites, iCloud Private Relay, tunnelling services, HTTP CONNECT and SOCKS proxies</td><td>Proxy sites and proxy settings</td></tr>
+<tr><td><b>Encrypted DNS</b></td><td>DoH / DoT resolvers, Firefox's switch for it</td><td>Looking sites up somewhere else, which skips the site filter (the deeper checks still apply)</td></tr>
+<tr><td><b>Disguised tunnels</b></td><td>The genuine-web-traffic check on ports 80/443, server-speaks-first protocols, split handshakes</td><td>Stealth VPN modes and Tor bridges that disguise themselves as web traffic. A recognisable VPN or SOCKS protocol is still stopped while VPNs / Proxies are on.</td></tr>
+<tr><td><b>Hidden site names</b></td><td>Connections without a site name, Encrypted Client Hello, ECH keys in DNS, QUIC</td><td>Connections that hide which site they're for</td></tr>
+<tr><td><b>Direct-to-address</b></td><td>Only connecting to addresses the gateway's DNS gave out, and the site name matching that address. <i>Block</i>, <i>Allow and tell me</i>, or <i>Off</i>.</td><td>Apps with built-in server addresses, domain fronting</td></tr>
+<tr><td><b>DNS tunnels</b></td><td>Traffic smuggled inside DNS lookups, tunnel-only record types</td><td>DNS-tunnel apps</td></tr>
+<tr><td><b>Traffic other than the web</b></td><td><i>Web only</i>, <i>Web + online games (UDP)</i>, or <i>Allow everything</i> - which still checks other traffic for VPN, Tor and torrent signatures while those protections are on</td><td>Unrecognised non-web protocols</td></tr>
+<tr><td><b>Torrent protocols</b></td><td>BitTorrent peer traffic (even disguised on web ports), trackers, DHT/uTP, peer fan-out. Torrent <i>websites</i> are the separate "Torrents" category.</td><td>Torrent clients that reach their peers</td></tr>
+<tr><td><b>Behaviour detection</b></td><td>Blocking destinations that behave like a tunnel</td><td>A brand-new tunnel nothing else recognises</td></tr>
+<tr><td><b>Attacks on the gateway</b></td><td>Alerts for port scans, probes of the dashboard/SSH, hidden routers</td><td>Nothing - those are still refused, you just aren't told</td></tr>
+</tbody></table>
+<p>The alerts and the bypass-tool escalation only fire for protections that are on. Adults' devices get none of these,
+whatever the switches say. Two things are not switches because nothing works without them: every DNS question is
+answered by the gateway (otherwise there's no filter at all), and devices can't reach your ISP router's settings page.</p>
 </section>
 
 <section id="technology" data-title="Targeting the technology, not server lists">

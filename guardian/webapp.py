@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import json
 
+from . import protections
 from .alerts import KINDS
 from .auth import Auth
 from .activity import CLASSES
@@ -716,7 +717,7 @@ def create_app(g) -> FastAPI:
         return {
             "mode": g.mode,
             "groups": [{"name": n, "filtered": gc["filtered"], "categories": gc.get("categories", []),
-                        "udp": gc.get("allow_udp"), "dns_consistency": gc.get("dns_consistency"),
+                        "protections": protections.effective(c, gc),
                         "adult": gc.get("adult_protection") or (a.get("mode") if gc["filtered"] else "off"),
                         "downloads": gc.get("downloads") or (d.get("policy") if gc["filtered"] else "off"),
                         "is_default": n == c["default_group"]}
@@ -731,6 +732,9 @@ def create_app(g) -> FastAPI:
             "fail_open": c["enforcement"].get("fail_open"),
             "poll": c["flows"].get("poll_interval"),
         }
+
+    def protections_defs():
+        return [{"key": k, **v} for k, v in protections.PROTECTIONS.items()]
 
     # ------------------------------------------------------------ setup wizard
     def wizard_bedtime():
@@ -751,6 +755,7 @@ def create_app(g) -> FastAPI:
             "complete": g.db.get_setting("setup_complete") is not None,
             "mode": g.mode,
             "presets": settings.PRESETS,
+            "protections": protections_defs(),
             "categories": [{"key": k, "label": v[0], "description": v[1], "default": v[2]}
                            for k, v in settings.CATEGORY_INFO.items() if k in (g.cfg.get("categories") or {})],
             "groups": [{"name": n, "filtered": gc["filtered"], "description": gc.get("description", "")}
@@ -806,6 +811,32 @@ def create_app(g) -> FastAPI:
         if body.get("finish", True):
             g.db.set_setting("setup_complete", str(time.time()))
         return {"ok": True, **result}
+
+    @app.get("/api/protections")
+    def get_protections():
+        c = g.cfg
+        return {"definitions": protections_defs(), "global": dict(c["protections"]),
+                "groups": [{"name": n, "filtered": gc["filtered"],
+                            "overrides": {k: v for k, v in (gc.get("protections") or {}).items() if v is not None},
+                            "effective": protections.effective(c, gc)}
+                           for n, gc in c["groups"].items()]}
+
+    @app.post("/api/protections")
+    async def set_protection(req: Request):
+        from . import settings
+        b = await req.json()
+        key, scope, value = b.get("key"), b.get("group", "all"), b.get("value")
+        try:
+            if scope == "all":
+                if value is None:
+                    raise ValueError("choose a value for the house-wide setting")
+                settings.apply(g.cfg, {"protections": {**g.cfg["protections"], key: value}})
+            else:
+                settings.set_group_protection(g.cfg, scope, key, value)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        g.reconfigure()
+        return {"ok": True, **get_protections()}
 
     @app.post("/api/wizard/skip")
     def wizard_skip():

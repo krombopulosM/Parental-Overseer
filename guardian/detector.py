@@ -16,6 +16,8 @@ from __future__ import annotations
 import threading
 import time
 
+from .protections import BYPASS_CATEGORIES
+from .protections import on as prot
 from .services import registrable_domain, service_label
 
 
@@ -31,6 +33,7 @@ def _span(seconds: float) -> str:
 class Detector:
     def __init__(self, cfg, db, monitor, stats, lists, alerts, gateway=None, reputation=None):
         d = cfg["detector"]
+        self.full_cfg = cfg
         self.cfg = d
         self.db, self.monitor, self.stats, self.lists, self.alerts = db, monitor, stats, lists, alerts
         self.gateway = gateway
@@ -84,7 +87,7 @@ class Detector:
             if first is None or now - first < 86400:
                 score += 20
                 why.append(f"{registrable_domain(rec.domain)} was first seen on this network today")
-        if rec.domain and self.lists.category_match(rec.domain, ["bypass"]):
+        if rec.domain and self.lists.category_match(rec.domain, sorted(BYPASS_CATEGORIES)):
             score += 100
             why.append(f"{rec.domain} is a known VPN/proxy service")
         if self.lists.ip_list_match(rec.dst_ip) == "vpn":
@@ -106,8 +109,9 @@ class Detector:
         self.reload_allowlist()
         c = self.cfg
         by_client: dict[str, list] = {}
+        groups = self.full_cfg["groups"]
         for rec in self.monitor.active_flows():
-            if rec.filtered:
+            if rec.filtered and prot(self.full_cfg, groups.get(rec.group), "behaviour"):
                 by_client.setdefault(rec.client_ip, []).append(rec)
         results = []
         for client, recs in by_client.items():

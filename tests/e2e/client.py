@@ -587,5 +587,31 @@ def suite_kid_unknown_dest():
           res, OneOf("stalled", "reset", "closed"))
     check("that destination held until reviewed", tls("198.51.100.90", "files.unknown-host.test"), "reset")
 
+
+
+# ---------------------------------------------------------------- protection switches (console group)
+def suite_console_tor_off():
+    check("Tor switched off for consoles: Tor handshake shape now allowed",
+          tls("198.51.100.89", "www.qzx4mt7wpl.com"), "ok")
+    check("Tor switched off for consoles: listed Tor relay now reachable",
+          tls("198.51.100.87", "www.k3jd6a2bq7x.com"), "ok")
+
+
+def suite_console_tor_on():
+    check("Tor back on: listed Tor relay dropped again", tls("198.51.100.87", "www.k3jd6a2bq7x.com"), "timeout")
+
+
+def suite_console_open_vpn_on():
+    check("'allow everything' + VPNs on: OpenVPN port still blocked", raw_tcp("198.51.100.91", 1194, b"x"), "timeout")
+
+
+def suite_console_open_vpn_off():
+    check("'allow everything' + VPNs off: OpenVPN port reachable", raw_tcp("198.51.100.91", 1194, b"x"), "echo")
+
+
+def suite_console_web_games():
+    check("back to web + games: OpenVPN port blocked again", raw_tcp("198.51.100.91", 1194, b"x"), "timeout")
+
+
 if __name__ == "__main__":
     globals()[f"suite_{sys.argv[1]}"]()

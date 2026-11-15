@@ -14,6 +14,7 @@ import time
 from dnslib import CNAME, RR, DNSRecord, QTYPE, RCODE
 from dnslib.server import BaseResolver, DNSLogger, DNSServer
 
+from .protections import BYPASS_CATEGORIES
 from .services import is_ip_literal, registrable_domain
 
 FIREFOX_CANARY = "use-application-dns.net"
@@ -170,11 +171,12 @@ class GuardianResolver(BaseResolver):
             self._log(ctx, qname, qtype, "blocked", why)
             return self._reply(request, RCODE.NXDOMAIN)
 
-        if qname == FIREFOX_CANARY or qname.endswith("." + FIREFOX_CANARY):
+        if (qname == FIREFOX_CANARY or qname.endswith("." + FIREFOX_CANARY)) and \
+                (not ctx.filtered or self.policy.prot(ctx, "encrypted_dns")):
             self._log(ctx, qname, qtype, "blocked", "Firefox DoH canary (keeps Firefox on our DNS)")
             return self._reply(request, RCODE.NXDOMAIN)
 
-        if ctx.filtered:
+        if ctx.filtered and self.policy.prot(ctx, "dns_tunnels"):
             if qtype in self.block_qtypes:
                 self._log(ctx, qname, qtype, "blocked", f"{qtype} records are only used by tunnels")
                 return self._reply(request, RCODE.REFUSED)
@@ -186,10 +188,13 @@ class GuardianResolver(BaseResolver):
         if decision.block:
             self.counters["blocked"] += 1
             self._log(ctx, qname, qtype, "blocked", decision.reason)
-            if decision.category == "bypass" and ctx.filtered and self.alerts:
+            if decision.category in BYPASS_CATEGORIES and ctx.filtered and self.alerts:
+                what = {"tor": "the Tor Project - Tor Browser downloads and bridges",
+                        "doh": "an encrypted-DNS service", "vpn": "a VPN service",
+                        "proxy": "a proxy / private-relay service"}.get(decision.category,
+                                                                       "VPN / proxy / encrypted-DNS service")
                 self.alerts.emit("bypass_domain", device_id=ctx.device_id, client_ip=ctx.ip,
-                                 domain=registrable_domain(qname),
-                                 detail=f"Looked up {qname} (VPN / proxy / encrypted-DNS service)")
+                                 domain=registrable_domain(qname), detail=f"Looked up {qname} ({what})")
             elif decision.category == "torrent" and ctx.filtered and self.alerts:
                 self.alerts.emit("torrent_site", device_id=ctx.device_id, client_ip=ctx.ip,
                                  domain=registrable_domain(qname),
@@ -217,7 +222,8 @@ class GuardianResolver(BaseResolver):
                 return self._reply(request, RCODE.NXDOMAIN)
 
         if qtype in ("HTTPS", "SVCB", "TYPE65", "TYPE64") and (
-                self.strip_https == "all" or (self.strip_https == "filtered" and ctx.filtered)):
+                self.strip_https == "all" or (self.strip_https == "filtered" and ctx.filtered
+                                              and self.policy.prot(ctx, "hidden_names"))):
             self.counters["https_stripped"] += 1
             return self._reply(request)             # NOERROR, no records: no ECH keys
         if qtype == "AAAA" and self.strip_aaaa:

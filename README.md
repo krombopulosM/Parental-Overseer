@@ -67,6 +67,36 @@ For example, Mullvad has to get past three separate layers:
 
 ProtonVPN Stealth *is* real TLS, but it connects to server IPs the Pi's DNS never handed out, and those IPs are on the Proton server list anyway.
 
+### Every protection is a switch
+
+All of the above are on by default, and every one can be switched off, house-wide
+or for a single group (`protections:` in `config.yaml`, or the dashboard's Rules
+page and setup wizard):
+
+```yaml
+protections:            # house-wide, for every filtered group
+  vpn: true             # VPN sites, servers, protocols, learned fingerprints
+  tor: true             # Tor website, relays, Tor's handshake
+  proxies: true         # proxy sites, Private Relay, CONNECT / SOCKS
+  encrypted_dns: true   # DoH / DoT resolvers, Firefox canary
+  disguised_tunnels: true
+  hidden_names: true    # no-SNI, ECH, QUIC, HTTPS records
+  direct_ip: enforce    # enforce | log | off
+  dns_tunnels: true
+  non_web: block        # block (web only) | games (+UDP) | allow (everything, still checked)
+  torrents: true        # protocols; torrent *sites* are a category
+  behaviour: true
+  network_attacks: true # alerts for probes/scans/hidden routers
+groups:
+  teens:
+    protections: {tor: false, non_web: games}   # overrides; null = use the house-wide value
+```
+
+Each switch covers its route at every level (site, servers, protocol,
+fingerprint), so switching one off opens exactly that route. The older
+per-group keys `allow_udp`, `require_sni` and `dns_consistency` are still read
+and converted.
+
 ## Adult content protection
 
 A blocklist only knows sites someone has already listed. For children's
@@ -342,7 +372,8 @@ reopens it):
 | How it runs | Detects the platform, admin rights, interfaces, firewall, capture support and blocklists, and shows a pass/warn checklist. On a PC: DNS port (53 for real devices, 5353 for testing) and who can open the dashboard. On the Pi: the detected ports plus a house checklist. |
 | Protection level | **Strict** (recommended), **Balanced** or **Light** presets. |
 | Fine-tune | Adult-content mode, SafeSearch, YouTube Restricted Mode, family DNS, unknown video, downloads, unknown destinations, auto-pause after bypass attempts / network attacks. |
-| What to block | Categories for the kids, consoles and new-device groups (bypass is always on). |
+| What to block | Categories for the kids, consoles and new-device groups. |
+| Ways around | Each anti-bypass protection on or off: VPNs, Tor, proxies, encrypted DNS, disguised tunnels, hidden site names, direct-to-address connections, DNS tunnels, non-web traffic (web only / games / everything), torrent protocols, behaviour detection, gateway-attack reports. |
 | Devices | Names and groups for devices already seen; the device you're using is suggested as an adult's; what happens to new devices. |
 | Bedtime | Internet-off window for the children's groups (never adults). |
 | Privacy | History retention, recording adults' activity, fail-open vs fail-closed (Pi). |
@@ -406,7 +437,7 @@ Categories, lists, detector thresholds and schedules are all in
 ## Tests
 
 ```bash
-pytest -q                               # 136 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
+pytest -q                               # 155 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
@@ -427,7 +458,7 @@ unlisted Tor relays, and a CDN-style tunnel held as an unknown destination.
 It also drives the setup wizard: interfaces detected, a category change taking
 effect live for the kid, and a real self-restart that must come back as the
 same process with the inspector running and no stale fail-open rule.
-**174 checks pass.** Finally it kills the service and
+It switches protections per group on the live gateway (Tor off for the console only, "allow everything" still blocking VPN ports until VPNs are switched off). **185 checks pass.** Finally it kills the service and
 confirms kids' access fails closed while the parent is unaffected. (The IPv6 router check is
 skipped on kernels booted without IPv6.)
 

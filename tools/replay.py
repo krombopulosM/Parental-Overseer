@@ -28,7 +28,8 @@ from guardian.dnscache import DnsCache  # noqa: E402
 from guardian.identity import Identity  # noqa: E402
 from guardian.inspector import ACCEPT, FlowLabels, Inspector  # noqa: E402
 from guardian.lists import ListManager  # noqa: E402
-from guardian.policy import Policy  # noqa: E402
+from guardian.policy import Policy
+from guardian.protections import on as prot  # noqa: E402
 from guardian.protocols import parse_ip  # noqa: E402
 
 
@@ -91,7 +92,7 @@ def replay(path, group, client=None, cfg=None, out=print):
             # mimic the firewall: only the first packets of a connection reach the inspector
             if p.is_tcp and p.dport in (80, 443):
                 limit = limit_web
-            elif p.is_udp and g.get("allow_udp"):
+            elif (p.is_udp and prot(cfg, g, "non_web") == "games") or prot(cfg, g, "non_web") == "allow":
                 limit = 3
             else:
                 limit = 1

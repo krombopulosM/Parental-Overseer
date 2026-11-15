@@ -4,7 +4,7 @@
 
 const WZ_STEPS = [
   ["welcome", "Welcome"], ["run", "How it runs"], ["level", "Level"], ["tune", "Fine-tune"],
-  ["block", "What to block"], ["devices", "Devices"], ["bedtime", "Bedtime"], ["privacy", "Privacy"],
+  ["block", "What to block"], ["bypass", "Ways around"], ["devices", "Devices"], ["bedtime", "Bedtime"], ["privacy", "Privacy"],
   ["review", "Review"],
 ];
 const WZ_GROUPS = {
@@ -31,7 +31,7 @@ const WZ_FIELDS = [
     ["downloads", "Downloads", "Suspicious = risky file types, unknown sites, file lockers. Holding cuts the download and waits for you on the Reviews page.",
       [["review_suspicious", "Hold suspicious ones for review"], ["review_all", "Hold every download"], ["block_suspicious", "Block suspicious ones"], ["off", "Don't check"]]],
   ]],
-  ["Getting around the filter", [
+  ["When someone tries", [
     ["unknown_destinations", "Heavy traffic to unknown destinations", "A VPN on a brand-new server is still a lot of traffic to somewhere nobody else in the house uses. Known services and popular sites are never affected.",
       [["review", "Stop and hold for review"], ["alert", "Allow and tell me"], ["off", "Ignore"]]],
     ["escalation_pause", "Pause after repeated bypass attempts", "When several different bypass techniques are tried within 10 minutes (a VPN app working through its options), pause the device. 0 = only report it.", "minutes"],
@@ -39,12 +39,33 @@ const WZ_FIELDS = [
   ]],
 ];
 
+
+function wzProtOff(def, v) {
+  if (def.key === "non_web") return v === "allow";
+  if (def.key === "direct_ip") return v === "off";
+  return !v;
+}
+
+function wzFieldsHTML(sections) {
+  return sections.map(([section, fields]) => `<h2>${esc(section)}</h2><div class="wz-fields">${fields.map(([k, label, help, opts]) => {
+      const v = wz.values[k];
+      let ctl;
+      if (opts === "bool") ctl = `<label class="wz-toggle inline"><input type="checkbox" data-wz-key="${k}" ${v ? "checked" : ""}><span class="sw" aria-hidden="true"></span></label>`;
+      else if (opts === "minutes") ctl = `<select data-wz-key="${k}" data-num="1">${[[0, "Don't pause"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [120, "2 hours"]]
+        .concat([[v, `${v} minutes`]].filter(([x]) => ![0, 15, 30, 60, 120].includes(Number(x))))
+        .map(([x, l]) => `<option value="${x}" ${Number(x) === Number(v) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+      else ctl = `<select data-wz-key="${k}">${opts.map(([x, l]) => `<option value="${esc(x)}" ${x === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+      return `<div class="wz-field"><div><b>${esc(label)}</b><span class="d">${esc(help)}</span></div><div class="ctl">${ctl}</div></div>`;
+    }).join("")}</div>`).join("");
+}
+
 const wz = { data: null, step: 0, values: {}, devices: {}, bedtime: null, preset: null, busy: false };
 
 function wzPresetOf(values) {
   for (const [k, p] of Object.entries(wz.data.presets)) {
     const same = Object.entries(p.values).every(([key, v]) => key === "categories" ||
-      JSON.stringify(v) === JSON.stringify(values[key]));
+      (key === "protections" ? Object.entries(v).every(([pk, pv]) => values.protections[pk] === pv)
+        : JSON.stringify(v) === JSON.stringify(values[key])));
     if (same) return k;
   }
   return "custom";
@@ -194,25 +215,40 @@ const WZ_VIEWS = {
 
   tune: () => `<h1 id="wz-title" tabindex="-1">Fine-tune</h1>
     <p class="lead">Starting from <b>${esc(wz.preset === "custom" ? "your own settings" : wz.data.presets[wz.preset].label)}</b>. Change anything; the explanations say what each does.</p>
-    ${WZ_FIELDS.map(([section, fields]) => `<h2>${esc(section)}</h2><div class="wz-fields">${fields.map(([k, label, help, opts]) => {
-      const v = wz.values[k];
-      let ctl;
-      if (opts === "bool") ctl = `<label class="wz-toggle inline"><input type="checkbox" data-wz-key="${k}" ${v ? "checked" : ""}><span class="sw" aria-hidden="true"></span></label>`;
-      else if (opts === "minutes") ctl = `<select data-wz-key="${k}" data-num="1">${[[0, "Don't pause"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [120, "2 hours"]]
-        .concat([[v, `${v} minutes`]].filter(([x]) => ![0, 15, 30, 60, 120].includes(Number(x))))
-        .map(([x, l]) => `<option value="${x}" ${Number(x) === Number(v) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
-      else ctl = `<select data-wz-key="${k}">${opts.map(([x, l]) => `<option value="${esc(x)}" ${x === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
-      return `<div class="wz-field"><div><b>${esc(label)}</b><span class="d">${esc(help)}</span></div><div class="ctl">${ctl}</div></div>`;
-    }).join("")}</div>`).join("")}`,
+    ${wzFieldsHTML(WZ_FIELDS.filter(([sec]) => sec !== "When someone tries"))}
+    <p class="muted small">VPNs, Tor and the other ways around the filter are on the “Ways around” step.</p>`,
+
+  bypass: () => {
+    const defs = wz.data.protections, p = wz.values.protections;
+    const sections = [...new Set(defs.map(d => d.group))];
+    const offList = defs.filter(d => wzProtOff(d, p[d.key])).map(d => d.label);
+    return `<h1 id="wz-title" tabindex="-1">Ways around the filter</h1>
+      <p class="lead">Each of these closes one route children use to get around the filter. All are on for the
+        recommended setup; switch off anything you don't want. These are the house-wide settings for children's
+        groups - you can set any of them differently per group later, on the Rules page.</p>
+      ${offList.length ? `<div class="wz-note warn"><b>Off:</b> ${esc(offList.join(", "))}.</div>` : ""}
+      ${sections.map(sec => `<h2>${esc(sec)}</h2><div class="wz-fields">${defs.filter(d => d.group === sec).map(d => {
+        const v = p[d.key], isOff = wzProtOff(d, v);
+        const ctl = d.choices
+          ? `<select data-prot="${esc(d.key)}" aria-label="${esc(d.label)}">${d.choices.map(([x, l]) => `<option value="${esc(x)}" ${x === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`
+          : `<label class="wz-toggle inline"><input type="checkbox" data-prot="${esc(d.key)}" ${v ? "checked" : ""} aria-label="${esc(d.label)}"><span class="sw" aria-hidden="true"></span></label>`;
+        return `<div class="wz-field ${isOff ? "is-off" : ""}"><div><b>${esc(d.label)}</b><span class="d">${esc(d.does)}</span>
+          <span class="d off-note" ${isOff ? "" : "hidden"}>⚠️ ${esc(d.off)}</span></div><div class="ctl">${ctl}</div></div>`;
+      }).join("")}</div>`).join("")}
+      ${wzFieldsHTML(WZ_FIELDS.filter(([sec]) => sec === "When someone tries"))}
+      ${wz.data.mode === "gateway" ? `<div class="wz-fields">${`<div class="wz-field"><div><b>Watch the network for spoofing</b><span class="d">ARP and DHCP spoofing, rogue routers, cloned addresses. Needs a restart to change.</span></div>
+        <div class="ctl"><label class="wz-toggle inline"><input type="checkbox" data-wz-key="tamper_watch" ${wz.values.tamper_watch ? "checked" : ""} aria-label="Watch the network for spoofing"><span class="sw" aria-hidden="true"></span></label></div></div>`}</div>` : ""}`;
+  },
+
 
   block: () => `<h1 id="wz-title" tabindex="-1">What to block for children</h1>
     <p class="lead">Applies to the kids, consoles and new-device groups. Adults are never filtered.</p>
     <div class="wz-cats">${wz.data.categories.map(c => {
-      const on = wz.values.categories.includes(c.key), locked = c.key === "bypass";
-      return `<label class="wz-cat ${on ? "on" : ""} ${locked ? "locked" : ""}"><input type="checkbox" data-cat="${esc(c.key)}" ${on || locked ? "checked" : ""} ${locked ? "disabled" : ""}>
-        <span><b>${esc(c.label)}</b>${locked ? ` <span class="badge">always on</span>` : ""}<span class="d">${esc(c.description)}</span></span></label>`;
+      const on = wz.values.categories.includes(c.key);
+      return `<label class="wz-cat ${on ? "on" : ""}"><input type="checkbox" data-cat="${esc(c.key)}" ${on ? "checked" : ""}>
+        <span><b>${esc(c.label)}</b><span class="d">${esc(c.description)}</span></span></label>`;
     }).join("")}</div>
-    <p class="muted small">Blocking ways around the filter can't be turned off - without it every other choice could be undone with a free VPN app.</p>`,
+    <p class="muted small">VPN, Tor, proxy and encrypted-DNS sites are switched on the next step, together with the deeper checks that stop those apps.</p>`,
 
   devices: () => {
     const devs = wz.data.devices;
@@ -274,32 +310,35 @@ const WZ_VIEWS = {
     const v = wz.values, d = wz.data;
     const lab = (k, x) => { for (const [, fields] of WZ_FIELDS) for (const f of fields) if (f[0] === k && Array.isArray(f[3])) return (f[3].find(o => o[0] === x) || [, x])[1]; return x; };
     const yes = b => b ? "on" : "off";
-    const catLabels = d.categories.filter(c => v.categories.includes(c.key) || c.key === "bypass").map(c => c.label);
+    const catLabels = d.categories.filter(c => v.categories.includes(c.key)).map(c => c.label);
+    const offProt = d.protections.filter(p => wzProtOff(p, v.protections[p.key])).map(p => p.label);
+    const S = k => WZ_STEPS.findIndex(x => x[0] === k);
     const named = Object.entries(wz.devices).filter(([id, s]) => s.name || s.group);
     const restart = wzRestartKeys();
     const rows = [
-      [1, "How it runs", d.mode === "gateway" ? "Gateway mode" : `Monitor mode · DNS port ${v.dns_port} · dashboard ${v.web_host === "0.0.0.0" ? "open to the network" : "this computer only"}`],
-      [2, "Level", wz.preset === "custom" ? "Custom" : d.presets[wz.preset].label],
-      [3, "Adult content", `${lab("adult_mode", v.adult_mode)} · SafeSearch ${yes(v.safesearch)} · YouTube ${lab("youtube", v.youtube)} · family DNS ${yes(v.family_dns)} · unknown video: ${lab("unknown_video", v.unknown_video).toLowerCase()}`],
-      [3, "Downloads", lab("downloads", v.downloads)],
-      [3, "Bypass", `unknown destinations: ${lab("unknown_destinations", v.unknown_destinations).toLowerCase()} · pause after attempts: ${v.escalation_pause ? v.escalation_pause + " min" : "no"} · after attacks: ${v.tamper_pause ? v.tamper_pause + " min" : "no"}`],
-      [4, "Blocked", catLabels.join(", ")],
-      [5, "Devices", `${named.length} named or assigned · new devices go to ${v.default_group}`],
-      [6, "Bedtime", wz.bedtime.enabled ? `${wz.bedtime.start}-${wz.bedtime.end}, ${(wz.bedtime.days || "").split(",").filter(Boolean).length} nights a week, for ${(wz.bedtime.groups || []).join(", ") || "nobody"}` : "off"],
-      [7, "Privacy", `keep ${v.retention_days} days · adults recorded: ${v.log_trusted ? "yes" : "no"}${d.mode === "gateway" ? ` · if the inspector stops: ${v.fail_open ? "let traffic through" : "block"}` : ""}`],
+      [S("run"), "How it runs", d.mode === "gateway" ? "Gateway mode" : `Monitor mode · DNS port ${v.dns_port} · dashboard ${v.web_host === "0.0.0.0" ? "open to the network" : "this computer only"}`],
+      [S("level"), "Level", wz.preset === "custom" ? "Custom" : d.presets[wz.preset].label],
+      [S("tune"), "Adult content", `${lab("adult_mode", v.adult_mode)} · SafeSearch ${yes(v.safesearch)} · YouTube ${lab("youtube", v.youtube)} · family DNS ${yes(v.family_dns)} · unknown video: ${lab("unknown_video", v.unknown_video).toLowerCase()}`],
+      [S("tune"), "Downloads", lab("downloads", v.downloads)],
+      [S("bypass"), "Ways around", offProt.length ? `switched off: ${offProt.join(", ")}` : "all protections on"],
+      [S("bypass"), "Responses", `unknown destinations: ${lab("unknown_destinations", v.unknown_destinations).toLowerCase()} · pause after attempts: ${v.escalation_pause ? v.escalation_pause + " min" : "no"} · after attacks: ${v.tamper_pause ? v.tamper_pause + " min" : "no"}`],
+      [S("block"), "Blocked", catLabels.join(", ") || "no categories"],
+      [S("devices"), "Devices", `${named.length} named or assigned · new devices go to ${v.default_group}`],
+      [S("bedtime"), "Bedtime", wz.bedtime.enabled ? `${wz.bedtime.start}-${wz.bedtime.end}, ${(wz.bedtime.days || "").split(",").filter(Boolean).length} nights a week, for ${(wz.bedtime.groups || []).join(", ") || "nobody"}` : "off"],
+      [S("privacy"), "Privacy", `keep ${v.retention_days} days · adults recorded: ${v.log_trusted ? "yes" : "no"}${d.mode === "gateway" ? ` · if the inspector stops: ${v.fail_open ? "let traffic through" : "block"}` : ""}`],
     ];
     return `<h1 id="wz-title" tabindex="-1">Ready to go</h1>
       <p class="lead">Here's what will be set. Most of it applies the moment you press Finish.</p>
       <dl class="wz-review">${rows.map(([step, k, val]) => `<dt>${esc(k)}</dt><dd><span>${esc(val)}</span><button class="link small" data-wz-go="${step}">Change</button></dd>`).join("")}</dl>
-      ${restart.length ? `<div class="wz-note warn"><b>A restart is needed</b> for ${esc(restart.map(k => ({ dns_port: "the DNS port", web_host: "dashboard access", fail_open: "the inspector setting" }[k])).join(" and "))}. The service restarts itself after you press Finish and this page reconnects - it takes a few seconds.</div>` : ""}
+      ${restart.length ? `<div class="wz-note warn"><b>A restart is needed</b> for ${esc(restart.map(k => ({ dns_port: "the DNS port", web_host: "dashboard access", fail_open: "the inspector setting", tamper_watch: "network watching" }[k])).join(" and "))}. The service restarts itself after you press Finish and this page reconnects - it takes a few seconds.</div>` : ""}
       <p class="muted small">Settings are saved to <span class="mono">config.local.yaml</span> next to <span class="mono">config.yaml</span>.</p>`;
   },
 };
 
 function wzRestartKeys() {
   const o = wz.data.values, v = wz.values, out = [];
-  for (const k of ["dns_port", "web_host", "fail_open"]) {
-    if (wz.data.mode === "gateway" && k !== "fail_open") continue;
+  for (const k of ["dns_port", "web_host", "fail_open", "tamper_watch"]) {
+    if (wz.data.mode === "gateway" ? ["dns_port", "web_host"].includes(k) : ["fail_open", "tamper_watch"].includes(k)) continue;
     if (String(o[k]) !== String(v[k])) out.push(k);
   }
   return out;
@@ -325,6 +364,17 @@ const WZ_BIND = {
       wz.values[k] = el.type === "checkbox" ? el.checked : el.dataset.num ? Number(el.value) : el.value;
       wz.preset = wzPresetOf(wz.values);
     });
+  },
+  bypass(body) {
+    $$("[data-prot]", body).forEach(el => el.onchange = () => {
+      wz.values.protections[el.dataset.prot] = el.type === "checkbox" ? el.checked : el.value;
+      wz.preset = wzPresetOf(wz.values);
+      const def = wz.data.protections.find(d => d.key === el.dataset.prot);
+      const row = el.closest(".wz-field"), isOff = wzProtOff(def, wz.values.protections[def.key]);
+      row.classList.toggle("is-off", isOff);
+      $(".off-note", row).hidden = !isOff;
+    });
+    WZ_BIND.tune(body);
   },
   block(body) {
     $$("[data-cat]", body).forEach(el => el.onchange = () => {
@@ -368,7 +418,7 @@ async function wzFinish() {
   btn.disabled = true; btn.textContent = "Saving…";
   const values = { ...wz.values };
   if (wz.data.mode === "gateway") { delete values.dns_port; delete values.web_host; }
-  else delete values.fail_open;
+  else { delete values.fail_open; delete values.tamper_watch; }
   const devices = Object.entries(wz.devices).map(([device_id, s]) => ({ device_id, name: s.name, group: s.group || null }));
   try {
     const r = await post("/api/wizard/apply", { values, devices, bedtime: wz.bedtime, finish: true });

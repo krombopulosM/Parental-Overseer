@@ -28,7 +28,7 @@ LAN = [("pg-kid", "10.50.0.10", "02:00:00:00:00:10"), ("pg-kid2", "10.50.0.11", 
 INET_IPS = ["198.51.100.10", "198.51.100.53", "198.51.100.54", "198.51.100.66", "198.51.100.77",
             "198.51.100.78", "198.51.100.79", "198.51.100.80", "198.51.100.81", "198.51.100.82",
             "198.51.100.83", "198.51.100.84", "198.51.100.85", "198.51.100.86", "198.51.100.87",
-            "198.51.100.88", "198.51.100.89", "198.51.100.90", "9.9.9.9", "192.168.1.1"]
+            "198.51.100.88", "198.51.100.89", "198.51.100.90", "198.51.100.91", "9.9.9.9", "192.168.1.1"]
 results: list[dict] = []
 procs: list[subprocess.Popen] = []
 
@@ -88,7 +88,8 @@ def write_config():
         "ads": {"files": [f"{b}/ads.txt"]},
         "adult": {"files": [f"{W}/adult.txt", f"{b}/adult.txt"]},
         "gambling": {"files": []},
-        "bypass": {"files": [f"{b}/vpn.txt", f"{b}/doh.txt", f"{b}/bypass.txt"]},
+        "vpn": {"files": [f"{b}/vpn.txt"]}, "tor": {"files": [f"{b}/tor.txt"]},
+        "proxy": {"files": [f"{b}/bypass.txt"]}, "doh": {"files": [f"{b}/doh.txt"]},
         "torrent": {"files": [f"{b}/torrent.txt"]},
         "filehost": {"files": [f"{b}/filehost.txt"]},
         "mirrors": {"files": [f"{b}/mirrors.txt"]},
@@ -475,6 +476,32 @@ def main():
         record(sec, "no stale fail-open queue rule left behind", "--queue-bypass" not in rules,
                [r for r in rules.splitlines() if "NFQUEUE" in r])
         run_suite("pg-kid", "kid_basic", sec + ": filtering works after the restart")
+
+        # ---- Protection switches, per group (the console's group; the kids keep theirs)
+        sec = "Protection switches"
+
+        def setp(group, key, value):
+            r = api("post", "/api/protections", {"group": group, "key": key, "value": value})
+            if r["status"] != 200:
+                raise RuntimeError(r)
+            time.sleep(1)
+            return r["body"]
+        b = setp("consoles", "tor", False)
+        eff = {x["name"]: x["effective"] for x in b["groups"]}
+        record(sec, "Tor off for consoles only", eff["consoles"]["tor"] is False and eff["kids"]["tor"] is True,
+               {k: v["tor"] for k, v in eff.items()})
+        run_suite("pg-console", "console_tor_off", sec)
+        run_suite("pg-kid", "kid_tor", sec + ": the kid's group still blocks Tor")
+        setp("consoles", "tor", None)
+        run_suite("pg-console", "console_tor_on", sec)
+        setp("consoles", "non_web", "allow")
+        run_suite("pg-console", "console_open_vpn_on", sec)
+        setp("consoles", "vpn", False)
+        run_suite("pg-console", "console_open_vpn_off", sec)
+        setp("consoles", "vpn", None)
+        setp("consoles", "non_web", "games")
+        run_suite("pg-console", "console_web_games", sec)
+        run_suite("pg-console", "console_tor", sec + ": console back to normal")
 
         # ---- Tamper resistance: kill the inspector
         gw.terminate()

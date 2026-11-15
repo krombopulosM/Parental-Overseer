@@ -40,23 +40,17 @@ groups:
     categories: [ads]
   kids:
     filtered: true
-    categories: [ads, adult, gambling, bypass, torrent, mirrors, unsafe_search]
-    allow_udp: false          # web only: blocks WireGuard, OpenVPN-UDP, IPsec, QUIC, Shadowsocks-UDP...
-    require_sni: true         # encrypted connections must name the site they're going to
-    dns_consistency: "enforce"  # only connect to IPs the gateway's DNS handed out (enforce | log | off)
+    categories: [ads, adult, gambling, torrent, mirrors, unsafe_search]
   consoles:                   # games need UDP; VPN signatures + IP lists still apply
     filtered: true
-    categories: [ads, adult, gambling, bypass, torrent, mirrors, unsafe_search]
-    allow_udp: true
-    require_sni: true
-    dns_consistency: "log"
+    categories: [ads, adult, gambling, torrent, mirrors, unsafe_search]
     unknown_destinations: "alert"   # game servers are often obscure: report, don't hold
+    protections:              # overrides of the house-wide `protections:` below
+      non_web: games          # online games need UDP
+      direct_ip: log          # consoles use hard-coded matchmaking addresses: report, don't block
   quarantine:
     filtered: true
-    categories: [ads, adult, gambling, bypass, torrent, mirrors, unsafe_search]
-    allow_udp: false
-    require_sni: true
-    dns_consistency: "enforce"
+    categories: [ads, adult, gambling, torrent, mirrors, unsafe_search]
 default_group: quarantine
 
 # ---------------------------------------------------------------- domain categories
@@ -82,8 +76,17 @@ categories:
     urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/anti.piracy-onlydomains.txt]
   filehost:                   # file lockers and APK download sites
     files: [blocklists/builtin/filehost.txt]
-  bypass:                     # VPNs, proxies, encrypted-DNS resolvers, Tor, private relays
-    files: [blocklists/builtin/vpn.txt, blocklists/builtin/doh.txt, blocklists/builtin/bypass.txt]
+  # The next five are switched by `protections:` (vpn, tor, proxies, encrypted_dns),
+  # not listed in groups' categories.
+  vpn:                        # VPN providers' websites and app sign-in servers
+    files: [blocklists/builtin/vpn.txt]
+  tor:                        # Tor Browser downloads, bridge distribution, Snowflake
+    files: [blocklists/builtin/tor.txt]
+  proxy:                      # web proxies, iCloud Private Relay, public tunnelling services
+    files: [blocklists/builtin/bypass.txt]
+  doh:                        # encrypted-DNS resolvers
+    files: [blocklists/builtin/doh.txt]
+  bypass:                     # community list mixing all of the above; used while VPN or proxy
     urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt]
 
 # ---------------------------------------------------------------- destination IP lists
@@ -119,15 +122,33 @@ enforcement:
   # the destination was looked up under one of these domains.
   protocol_exempt_domains: [whatsapp.net, whatsapp.com]
 
+# ---------------------------------------------------------------- protections
+# The ways around the filter, each switchable. These are the house-wide settings
+# for every filtered group; a group can override any of them under its own
+# `protections:` (null = use the house-wide value). Adults get none of them.
+# The dashboard (setup wizard, Rules page) edits these for you.
+protections:
+  vpn: true                    # VPN sites, servers, protocols and learned VPN-app fingerprints
+  tor: true                    # Tor website, relays and Tor's own handshake
+  proxies: true                # proxy sites, Private Relay, HTTP CONNECT / SOCKS proxies
+  encrypted_dns: true          # DoH / DoT resolvers, Firefox's DoH canary
+  disguised_tunnels: true      # web ports must carry genuine web traffic
+  hidden_names: true           # connections must name their site (no-SNI, ECH, QUIC off, HTTPS records)
+  direct_ip: enforce           # only connect to addresses our DNS gave out: enforce | log | off
+  dns_tunnels: true            # DNS tunnelling + odd record types
+  non_web: block               # block (web only) | games (web + UDP) | allow (everything, still checked)
+  torrents: true               # BitTorrent protocol, trackers, DHT, peer fan-out
+  behaviour: true              # behaviour detector: tunnel-like traffic patterns
+  network_attacks: true        # report port scans / probes of the gateway / hidden routers
+
 # ---------------------------------------------------------------- torrents
 torrent:
   fanout_peers: 25             # distinct peers on random ports within `window` = torrent/P2P client
   window: 60
 
 # ---------------------------------------------------------------- VPN / Tor technology (not just lists)
-# Lists of VPN servers can't keep up, so these target the technology itself.
-# (Always on for filtered devices: web ports only, genuine-protocol checks,
-# connect only to addresses the gateway's DNS handed out.)
+# Lists of VPN servers can't keep up, so these target the technology itself
+# (switched on/off by `protections:` above).
 reputation:
   # The world's most-visited sites. Heavy traffic to anything that isn't
   # popular, a known service, used by an adult here, or approved is suspect.

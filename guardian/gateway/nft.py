@@ -6,10 +6,13 @@ Packet path for a device on the LAN:
               DNS (any destination, port 53) is redirected to the gateway's resolver
   forward     paused -> rejected
               filtered -> 'filtered' chain:
-                 VPN / DoH destination IPs, private ranges (ISP router UI) -> dropped
+                 private ranges (ISP router UI) -> dropped
+                 VPN / Tor / DoH / behaviour-blocked destinations -> first packet to the
+                   inspector, which applies the group's protection switches
                  TCP 80/443 -> first N packets go to the inspector (NFQUEUE), then allowed
                  UDP 123 small NTP packets -> allowed
-                 UDP (only groups with allow_udp) -> first packets inspected, then allowed
+                 UDP (groups with non_web: games) -> first packets inspected, then allowed
+                 anything (groups with non_web: allow) -> first packets inspected, then allowed
                  everything else -> first packet shown to the inspector for alerting, dropped
               trusted -> allowed
   postrouting masquerade out of the WAN port
@@ -90,6 +93,7 @@ table inet {TABLE} {{
     set trusted_macs {{ type ether_addr; }}
     set paused_macs  {{ type ether_addr; }}
     set udp_ok_macs  {{ type ether_addr; }}
+    set open_macs    {{ type ether_addr; }}
     set admin_macs   {{ type ether_addr; }}
     set vpn_v4 {{ type ipv4_addr; flags interval; auto-merge; }}
     set vpn_v6 {{ type ipv6_addr; flags interval; auto-merge; }}
@@ -151,19 +155,22 @@ table inet {TABLE} {{
         ip6 daddr @vpn_v6 jump bad_dest
         ip daddr @doh_v4 jump bad_dest
         ip6 daddr @doh_v6 jump bad_dest
-        ip daddr @dyn_v4 drop
-        ip6 daddr @dyn_v6 drop
+        ip daddr @dyn_v4 jump bad_dest
+        ip6 daddr @dyn_v6 jump bad_dest
         tcp dport {{ 80, 443 }} jump web
         udp dport 123 udp length <= 100 accept
         ether saddr @udp_ok_macs meta l4proto udp jump udp_inspect
+        ether saddr @open_macs jump udp_inspect
         icmp type echo-request limit rate 5/second accept
         ct original packets <= 1 {q}
         drop
     }}
 
     chain bad_dest {{
+        # The inspector decides on the first packet (protections can be switched
+        # off per group); connections it lets through carry on through the rules.
         ct original packets <= 1 {q}
-        drop
+        return
     }}
 
     chain web {{
@@ -241,10 +248,11 @@ table inet {TABLE} {{
             script += f"add element inet {TABLE} {name} {{ {', '.join(elements[i:i + chunk])} }}\n"
         return script
 
-    def sync_device_sets(self, trusted, paused, udp_ok, admin):
+    def sync_device_sets(self, trusted, paused, udp_ok, admin, open_=()):
         """Push MAC sets; returns the MACs whose state changed (their flows get reset)."""
         want = {"trusted_macs": frozenset(trusted), "paused_macs": frozenset(paused),
-                "udp_ok_macs": frozenset(udp_ok), "admin_macs": frozenset(admin)}
+                "udp_ok_macs": frozenset(udp_ok), "admin_macs": frozenset(admin),
+                "open_macs": frozenset(open_)}
         changed_macs = set()
         script = ""
         with self._lock:

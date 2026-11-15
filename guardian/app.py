@@ -14,6 +14,7 @@ from .identity import Identity
 from .inspector import FlowLabels, Inspector
 from .lists import ListManager
 from .policy import Policy
+from .protections import on as prot
 from .resolver import DnsTunnelDetector, GuardianResolver, QueryStats, start_dns
 from .schedule import Scheduler
 
@@ -239,7 +240,7 @@ class Guardian:
         """Mirror device groups, pauses and lists into the firewall's sets."""
         if self.gateway is None:
             return
-        trusted, paused, udp_ok, admin = set(), set(), set(), set()
+        trusted, paused, udp_ok, admin, open_ = set(), set(), set(), set(), set()
         admin_groups = set(self.cfg["gateway"].get("admin_groups") or [])
         ip_of = {}
         for d in self.db.list_devices():
@@ -249,10 +250,13 @@ class Guardian:
             ip_of[mac] = d.get("ip")
             g = self.policy.group_name(d["device_id"])
             gc = self.cfg["groups"][g]
+            non_web = prot(self.cfg, gc, "non_web")
             if not gc["filtered"]:
                 trusted.add(mac)
-            elif gc.get("allow_udp"):
+            elif non_web == "games":
                 udp_ok.add(mac)
+            elif non_web == "allow":
+                open_.add(mac)
             # Dashboard reachability follows the *configured* group: a parent whose
             # identity is in quarantine must still reach the dashboard to click
             # "It's me" (the password still protects it).
@@ -260,7 +264,7 @@ class Guardian:
                 admin.add(mac)
             if self.scheduler.is_paused(d["device_id"], g)[0]:
                 paused.add(mac)
-        changed = self.gateway.sync_device_sets(trusted, paused, udp_ok, admin)
+        changed = self.gateway.sync_device_sets(trusted, paused, udp_ok, admin, open_)
         for mac in changed:
             if ip_of.get(mac):
                 self.gateway.kill_device_flows(ip_of[mac])

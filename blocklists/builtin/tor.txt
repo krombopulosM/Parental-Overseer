@@ -1,0 +1,5 @@
+# Tor Browser downloads, bridge distribution (bridges.torproject.org) and
+# Snowflake rendezvous. Blocking the site is the smallest part of stopping Tor:
+# relays, bridges and Tor's handshake are caught by the gateway itself.
+torproject.org
+torproject.net

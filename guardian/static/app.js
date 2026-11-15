@@ -316,10 +316,10 @@ views.guide = {
         Downloads: <b>${esc(String(s.downloads.policy).replace("_", " "))}</b> (hold at ${s.downloads.threshold}+).
         Network attacks pause a device for <b>${s.tamper.auto_pause_minutes || 0} min</b>.
         If the inspector stops, children's web access <b>${s.fail_open ? "stays open (fail-open)" : "is cut (fail-closed)"}</b>.</div>`;
-      $("#your-groups").innerHTML = `<table><thead><tr><th>Group</th><th>Filtered</th><th>Blocked categories</th><th>UDP / games</th><th>Adult protection</th><th>Downloads</th></tr></thead><tbody>
+      $("#your-groups").innerHTML = `<table><thead><tr><th>Group</th><th>Filtered</th><th>Blocked categories</th><th>Ways around: switched off</th><th>Adult protection</th><th>Downloads</th></tr></thead><tbody>
         ${s.groups.map(g => `<tr><td><b>${esc(g.name)}</b>${g.is_default ? ` <span class="badge info">new devices</span>` : ""}</td><td>${g.filtered ? "yes" : "no"}</td>
-        <td class="small">${esc(g.categories.join(", ") || "-")}</td><td>${g.udp ? "allowed" : "blocked"}</td><td>${esc(g.adult)}</td><td class="small">${esc(String(g.downloads).replace("_", " "))}</td></tr>`).join("")}</tbody></table>`;
-      const sizes = Object.entries(s.lists).filter(([k]) => ["adult", "bypass", "torrent", "mirrors", "unsafe_search", "piracy"].includes(k));
+        <td class="small">${esc(g.categories.join(", ") || "-")}</td><td class="small">${g.filtered ? esc(Object.entries(g.protections).filter(([k, v]) => v === false || (k === "non_web" && v === "allow") || (k === "direct_ip" && v === "off")).map(([k]) => k.replace("_", " ")).join(", ") || "none") : "-"}${g.filtered && g.protections.non_web === "games" ? ` <span class="faint">(games traffic allowed)</span>` : ""}</td><td>${esc(g.adult)}</td><td class="small">${esc(String(g.downloads).replace("_", " "))}</td></tr>`).join("")}</tbody></table>`;
+      const sizes = Object.entries(s.lists).filter(([k]) => ["adult", "vpn", "tor", "proxy", "doh", "bypass", "torrent", "mirrors", "unsafe_search", "piracy"].includes(k));
       $("#your-adult").innerHTML = `<div class="setup-box"><h4>In your setup</h4>Adult protection is <b>${esc(s.adult.mode)}</b>; video from unknown sites: <b>${esc(s.adult.unknown_video)}</b>.
         List sizes: ${sizes.map(([k, v]) => `${esc(k)} <b>${v.toLocaleString()}</b>`).join(" · ")}.</div>`;
     } catch (_) { /* the summary is optional */ }
@@ -629,6 +629,11 @@ views.alerts = {
 views.rules = {
   shell: () => `
     <div class="page-head"><div><h1>Rules &amp; schedules</h1><div class="muted">An allow rule beats any blocklist; a block rule adds a site to the filter.</div></div></div>
+    <div class="panel" id="prot-panel"><div class="panel-head"><h2>Ways around the filter</h2>
+      <div class="tools small muted">House-wide settings, and any group set differently</div></div>
+      <div class="panel-body small muted">Each protection closes one route around the filter. Change the house-wide column to change every
+        children's group at once, or set a group on its own - <i>Default</i> means "same as house-wide". <a href="#guide/bypass-switches">What each one does</a></div>
+      <div class="scroll" id="prot-table"></div></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h2>Site rules</h2></div>
         <div class="panel-body"><form class="row" id="rule-form">
@@ -654,6 +659,7 @@ views.rules = {
       <div class="panel"><div class="panel-head"><h2>Marked as fine</h2></div><div class="scroll" id="allow-table"></div></div>
     </div>`,
   async init() {
+    renderProtections(await api("/api/protections"));
     const scopes = [`<option value="global|">Everyone</option>`,
       ...state.groups.map(g => `<option value="group|${esc(g.name)}">Group: ${esc(g.name)}</option>`)];
     $("#r-scope").innerHTML = scopes.join("");
@@ -699,6 +705,38 @@ views.rules = {
       </tbody></table>` : `<div class="empty">Nothing exempted.</div>`;
   },
 };
+
+const protIsOff = (d, v) => d.key === "non_web" ? v === "allow" : d.key === "direct_ip" ? v === "off" : v === false;
+const protLabel = (d, v) => d.choices ? ((d.choices.find(c => c[0] === v) || [, v])[1]) : (v ? "On" : "Off");
+
+function renderProtections(p) {
+  const groups = p.groups.filter(g => g.filtered);
+  const sections = [...new Set(p.definitions.map(d => d.group))];
+  const opts = (d, cur, inherit) => {
+    const vals = d.choices ? d.choices : [[true, "On"], [false, "Off"]];
+    return (inherit !== undefined ? `<option value="__inherit" ${cur === undefined ? "selected" : ""}>Default (${esc(protLabel(d, inherit))})</option>` : "") +
+      vals.map(([v, l]) => `<option value="${esc(JSON.stringify(v))}" ${cur !== undefined && cur === v ? "selected" : ""}>${esc(l)}</option>`).join("");
+  };
+  $("#prot-table").innerHTML = `<table class="prot-table"><thead><tr><th>Protection</th><th>House-wide</th>
+    ${groups.map(g => `<th>${esc(g.name)}</th>`).join("")}</tr></thead><tbody>
+    ${sections.map(sec => `<tr class="sec"><td colspan="${2 + groups.length}">${esc(sec)}</td></tr>` + p.definitions.filter(d => d.group === sec).map(d => `
+      <tr><td><b>${esc(d.label)}</b><div class="small muted prot-does" title="${esc(d.does)}">${esc(d.does)}</div></td>
+        <td class="${protIsOff(d, p.global[d.key]) ? "prot-off" : ""}"><select data-prot="${esc(d.key)}" data-scope="all" aria-label="${esc(d.label)} house-wide">${opts(d, p.global[d.key])}</select></td>
+        ${groups.map(g => `<td class="${protIsOff(d, g.effective[d.key]) ? "prot-off" : ""}"><select data-prot="${esc(d.key)}" data-scope="${esc(g.name)}" aria-label="${esc(d.label)} for ${esc(g.name)}">
+          ${opts(d, g.overrides[d.key], p.global[d.key])}</select></td>`).join("")}</tr>`).join("")).join("")}
+    </tbody></table>`;
+  $$("#prot-table select").forEach(sel => sel.onchange = async () => {
+    const def = p.definitions.find(d => d.key === sel.dataset.prot);
+    const value = sel.value === "__inherit" ? null : JSON.parse(sel.value);
+    try {
+      const r = await post("/api/protections", { key: def.key, group: sel.dataset.scope, value });
+      renderProtections(r);
+      const who = sel.dataset.scope === "all" ? "house-wide" : `for ${sel.dataset.scope}`;
+      toast(value === null ? `${def.label}: ${sel.dataset.scope} now follows the house-wide setting` :
+        `${def.label} ${protLabel(def, value).toLowerCase()} ${who}` + (protIsOff(def, value) ? " - " + def.off : ""), protIsOff(def, value) ? 6000 : 2600);
+    } catch (e) { if (!(e instanceof AuthError)) toast(e.message, 4000); renderProtections(await api("/api/protections")); }
+  });
+}
 
 views.system = {
   shell: () => `
