@@ -215,3 +215,39 @@ def test_holds_and_approvals_survive_restart(stack):
     again = DownloadGuard(stack.cfg, stack.db, stack.guard.lists, stack.alerts)
     assert not again.held_for(rec.device_id, "mega.nz")
     assert (rec.device_id, "mega.nz") in again.approved                            # approval remembered
+
+
+def run_video(o, domain, ip, sport, seconds=16):
+    """1.5 MB bursts every 3rd 2-second tick: the shape of a video player."""
+    o.dnscache.record("192.168.50.23", [domain], [(ip, 300)])
+    tup = ("tcp", "192.168.50.23", sport, ip, 443)
+    up = down = pu = pd = 0
+    for i in range(seconds // 2):
+        if i % 3 == 0:
+            up, down, pu, pd = up + 20_000, down + 1_500_000, pu + 300, pd + 1100
+        o.be.samples = [FlowSample(f"v{sport}", tup, up, down, pu, pd)]
+        o.mon.ingest(o.be.samples, T0 + 500 + i * 2)
+    return o.mon.active[f"v{sport}"]
+
+
+def test_unknown_video_held_known_video_not(stack):
+    from guardian.adult import AdultGuard
+    stack.cfg["adult"]["video_sites"] = ["vimeo.com", "vimeocdn.com"]
+    stack.guard.adult = AdultGuard(stack.cfg, stack.guard.lists, stack.alerts)
+    rec = run_video(stack, "stream.unknown-tube.example", "45.9.9.9", 51000)
+    assert rec.activity.cls == "video" and rec.dl_state == "held"
+    row = stack.db.downloads(status="pending")[0]
+    assert row["kind"] == "video" and row["site"] == "unknown-tube.example"
+    assert stack.guard.held_for(rec.device_id, "unknown-tube.example")
+    ok = run_video(stack, "player.vimeocdn.com", "151.101.9.9", 51001)
+    assert ok.dl_state == "known_video"
+
+
+def test_unknown_video_standard_mode_only_alerts(stack):
+    from guardian.adult import AdultGuard
+    stack.cfg["groups"]["kids"]["adult_protection"] = "standard"
+    stack.guard.adult = AdultGuard(stack.cfg, stack.guard.lists, stack.alerts)
+    rec = run_video(stack, "stream.unknown-tube.example", "45.9.9.9", 51002)
+    assert rec.dl_state == "alerted" and not stack.killed
+    stack.db.flush()
+    assert any(a["kind"] == "video_held" for a in stack.db.alerts())

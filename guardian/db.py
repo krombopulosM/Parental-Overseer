@@ -98,6 +98,7 @@ _ADDED_COLUMNS = [
     ("alerts", "review", "TEXT"),            # NULL | 'fp' (not a bypass) | 'tp' (confirmed)
     ("alerts", "reviewed_at", "REAL"),
     ("devices", "suspect", "INTEGER DEFAULT 0"),
+    ("downloads", "kind", "TEXT DEFAULT 'download'"),
 ]
 
 _FLOW_UPSERT = """
@@ -475,10 +476,10 @@ class DB:
     def add_download(self, d: dict):
         cur = self.execute(
             "INSERT INTO downloads (ts, device_id, client_ip, site, domain, dst_ip, dst_port, filename, bytes_seen, "
-            "rate, score, reasons, status, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "rate, score, reasons, status, note, kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (time.time(), d.get("device_id"), d.get("client_ip"), d.get("site"), d.get("domain"), d.get("dst_ip"),
              d.get("dst_port"), d.get("filename"), d.get("bytes_seen"), d.get("rate"), d.get("score"),
-             d.get("reasons"), d.get("status"), d.get("note")))
+             d.get("reasons"), d.get("status"), d.get("note"), d.get("kind") or "download"))
         return cur.lastrowid
 
     def get_download(self, rid):

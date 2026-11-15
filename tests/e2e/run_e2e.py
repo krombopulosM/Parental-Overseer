@@ -25,8 +25,9 @@ PY = sys.executable
 NAMESPACES = ["pg-inet", "pg-gw", "pg-kid", "pg-kid2", "pg-parent", "pg-console"]
 LAN = [("pg-kid", "10.50.0.10", "02:00:00:00:00:10"), ("pg-kid2", "10.50.0.11", "02:00:00:00:00:11"),
        ("pg-parent", "10.50.0.20", "02:00:00:00:00:20"), ("pg-console", "10.50.0.30", "02:00:00:00:00:30")]
-INET_IPS = ["198.51.100.10", "198.51.100.53", "198.51.100.66", "198.51.100.77", "198.51.100.78",
-            "198.51.100.79", "198.51.100.80", "198.51.100.81", "198.51.100.82", "9.9.9.9", "192.168.1.1"]
+INET_IPS = ["198.51.100.10", "198.51.100.53", "198.51.100.54", "198.51.100.66", "198.51.100.77",
+            "198.51.100.78", "198.51.100.79", "198.51.100.80", "198.51.100.81", "198.51.100.82",
+            "198.51.100.83", "198.51.100.84", "198.51.100.85", "9.9.9.9", "192.168.1.1"]
 results: list[dict] = []
 procs: list[subprocess.Popen] = []
 
@@ -89,7 +90,10 @@ def write_config():
         "bypass": {"files": [f"{b}/vpn.txt", f"{b}/doh.txt", f"{b}/bypass.txt"]},
         "torrent": {"files": [f"{b}/torrent.txt"]},
         "filehost": {"files": [f"{b}/filehost.txt"]},
+        "mirrors": {"files": [f"{b}/mirrors.txt"]},
+        "unsafe_search": {"files": [f"{b}/unsafe_search.txt"]},
     }
+    cfg["adult"] = {**cfg.get("adult", {}), "family_dns": ["198.51.100.54"]}
     cfg["ip_lists"] = {"vpn": {"files": [f"{b}/vpn-ips.txt", f"{W}/vpn-test.txt"]},
                        "doh": {"files": [f"{b}/doh-ips.txt"]}}
     cfg["enforcement"]["consistency_exempt"] = f"{b}/consistency-exempt.txt"
@@ -139,6 +143,10 @@ assert c.post("/api/login", json={"password": "e2e-password"}, headers=H).status
 op = json.loads(sys.argv[1])
 if op["do"] == "get":
     print(json.dumps(c.get(op["path"]).json()))
+elif op["do"] == "raw":
+    r = c.get(op["path"])
+    print(json.dumps({"status": r.status_code, "len": len(r.text),
+                      "markers": [m for m in op["body"]["markers"] if m in r.text]}))
 elif op["do"] == "badlogin":
     for _ in range(op["body"]["n"]):
         httpx.post("http://10.50.0.1:8080/api/login", json={"password": "wrong-guess"}, headers=H)
@@ -361,6 +369,30 @@ def main():
         al = [a for a in api("get", "/api/alerts?limit=1000")["alerts"] if a["kind"] == "download_held"]
         record(sec, "held downloads also raise alerts with confidence",
                len(al) >= 2 and all(a["confidence"] for a in al), [(a["domain"], a["confidence"]) for a in al])
+
+        # ---- Adult content: beyond the blocklists
+        sec = "Adult content protection"
+        run_suite("pg-kid", "kid_adult", sec)
+        run_suite("pg-parent", "parent_adult", sec)
+        rv = api("get", "/api/downloads")
+        vid = [d for d in rv["pending"] if d.get("kind") == "video" and d["site"] == "unknown-tube.test"]
+        record(sec, "unknown video waiting on the Reviews page", bool(vid), vid[0]["reasons"] if vid else rv["pending"])
+        kinds = {a["kind"] for a in api("get", "/api/alerts?limit=1000")["alerts"]}
+        for k in ["adult_site", "adult_keyword", "adult_family_dns", "adult_proxy", "content_mirror",
+                  "unsafe_search", "video_held"]:
+            record(sec, f"alert: {k}", k in kinds, "")
+        h = api("get", "/api/health?days=7")
+        record(sec, "Health counts the 'Adult content' category", h["totals"].get("adult", 0) > 0, h["totals"])
+
+        sec = "In-app guide"
+        markers = ["How it works", "VPNs - what they are", "Stopping workarounds", "Adult content protection",
+                   "Protecting the gateway itself", "Troubleshooting"]
+        g = api("raw", "/static/docs.html", {"markers": markers})
+        record(sec, "guide served to a signed-in parent", g["status"] == 200 and g["len"] > 20000, g["len"])
+        record(sec, "guide covers features, how they work and the technology", g["markers"] == markers, g["markers"])
+        ss = api("get", "/api/setup-summary")
+        record(sec, "'your setup' summary reflects the live config", ss["mode"] == "gateway" and
+               ss["adult"]["family_dns"] == ["198.51.100.54"], ss["adult"])
 
         # ---- Tamper resistance: kill the inspector
         gw.terminate()

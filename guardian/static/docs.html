@@ -1,0 +1,432 @@
+<section id="start" data-title="Start here">
+<h2>Start here</h2>
+<p class="lead">Parental Gateway sits between your home internet connection and every device in the house.
+Everything a phone, tablet, laptop or console sends to the internet passes through it, so it can
+<b>filter</b> what children can reach, <b>show</b> what they're doing, <b>stop</b> the usual ways of getting around a
+filter, and <b>tell you</b> when someone tries.</p>
+<div class="callout">
+  <b>The three things that matter most</b>
+  <ol>
+    <li><b>Put your own devices in the "adults" group</b> (Devices page). Everything else is filtered until you say otherwise.</li>
+    <li><b>Turn off the Wi-Fi on your ISP's router</b> and change its admin password. If children can join that Wi-Fi, they skip the gateway completely.</li>
+    <li><b>Check the Health page now and then.</b> It tells you if protection is working and who has been trying to get around it.</li>
+  </ol>
+</div>
+<h3>What it can and can't see</h3>
+<table>
+  <thead><tr><th>It can see</th><th>It can't see</th></tr></thead>
+  <tbody>
+    <tr><td>Which <b>sites and services</b> each device uses (youtube.com, roblox.com…)</td><td>Which <b>page or video</b> on a site - pages are encrypted</td></tr>
+    <tr><td><b>How long</b> and <b>how much data</b></td><td>Messages, searches or passwords - they're encrypted</td></tr>
+    <tr><td>What a device is probably <b>doing</b> (gaming, video, downloading) from the shape of its traffic</td><td>Anything done on <b>mobile data</b> or another Wi-Fi network</td></tr>
+    <tr><td>Attempts to <b>get around</b> the filter, and attacks on the gateway itself</td><td>Traffic between two devices <i>inside</i> your Wi-Fi (turn on "AP isolation" on your access point)</td></tr>
+  </tbody>
+</table>
+<p>It never breaks encryption and never installs anything on children's devices. Everything it knows comes from
+the parts of internet traffic that are visible on any network.</p>
+<div id="your-setup"></div>
+</section>
+
+<section id="how" data-title="How it works">
+<h2>How it works</h2>
+<p>The gateway is a small computer (a Raspberry Pi) wired between your ISP's router and your Wi-Fi access point.
+It becomes the router for your home: devices get their network settings from it, and it is the only way out to the internet.</p>
+<figure class="diagram">
+<svg viewBox="0 0 860 210" role="img" aria-label="Devices connect through the Wi-Fi access point to the Parental Gateway, then the ISP router, then the internet">
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+  <g font-size="13" fill="var(--text)" text-anchor="middle">
+    <rect x="10" y="60" width="140" height="90" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+    <text x="80" y="95" font-weight="600">Phones, tablets,</text><text x="80" y="113" font-weight="600">laptops, consoles</text>
+    <rect x="186" y="70" width="120" height="70" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+    <text x="246" y="102" font-weight="600">Wi-Fi</text><text x="246" y="120">access point</text>
+    <rect x="338" y="18" width="292" height="174" rx="12" fill="var(--panel-2)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="484" y="46" font-weight="700">Parental Gateway (Pi)</text>
+    <g font-size="12">
+      <text x="484" y="74">1 · DNS filter - what may be looked up</text>
+      <text x="484" y="96">2 · Firewall - what may leave</text>
+      <text x="484" y="118">3 · Inspector - each connection's opening</text>
+      <text x="484" y="140">4 · Monitor - data, time, activity</text>
+      <text x="484" y="162">5 · Tamper watch - attacks on the network</text>
+    </g>
+    <rect x="658" y="70" width="92" height="70" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+    <text x="704" y="102" font-weight="600">ISP</text><text x="704" y="120">router</text>
+    <rect x="774" y="70" width="80" height="70" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+    <text x="814" y="110" font-weight="600">Internet</text>
+  </g>
+  <g stroke="var(--muted)" stroke-width="2" marker-end="url(#arr)">
+    <line x1="150" y1="105" x2="182" y2="105"/><line x1="306" y1="105" x2="334" y2="105"/>
+    <line x1="630" y1="105" x2="654" y2="105"/><line x1="750" y1="105" x2="770" y2="105"/>
+  </g>
+</svg>
+<figcaption>All traffic from every device passes the gateway's five stages.</figcaption>
+</figure>
+<h3>The journey of one web request</h3>
+<p>Say a child types a web address. Here is what happens, in order:</p>
+<ol class="steps">
+  <li><b>The device asks "where is example.com?"</b> - a DNS lookup. The gateway answers it. If the site is in a blocked
+    category, on a rule, looks adult by its name, or is flagged by the family DNS service, the answer is "doesn't exist" and the
+    browser shows an error. For search engines, the answer points to the locked SafeSearch version. If the child had set their own DNS server, the
+    question is quietly redirected to the gateway anyway.</li>
+  <li><b>The device connects to the address it was given.</b> The firewall only lets children's devices use normal web
+    traffic (ports 80 and 443). VPN protocols, unusual ports, known VPN servers and encrypted-DNS servers are dropped here.</li>
+  <li><b>The inspector reads the connection's opening</b> - the first few packets, before anything is encrypted. It
+    checks the site name the device is asking for, that it's a genuine web connection and not a disguised VPN, and that
+    the address really belongs to a name the gateway handed out. Anything wrong: the connection is reset.</li>
+  <li><b>The monitor watches the connection's traffic</b> every 2 seconds: how much data, which direction, how steady. That
+    tells it what the device is probably doing, notices downloads and unknown video, and records time spent.</li>
+</ol>
+<p>Separately, the <b>tamper watch</b> listens to the home network for attacks on the gateway itself (pretending to be the
+gateway, copying a parent's device identity, rogue network settings).</p>
+</section>
+
+<section id="setup" data-title="Setting it up">
+<h2>Setting it up</h2>
+<h3>What you need</h3>
+<ul>
+  <li>A Raspberry Pi 4 or 5 (2 GB or more) with Raspberry Pi OS (64-bit).</li>
+  <li>A USB 3 gigabit Ethernet adapter - the Pi needs two network ports.</li>
+  <li>A Wi-Fi access point, or your existing Wi-Fi router switched to <i>access point / bridge mode</i>.</li>
+</ul>
+<h3>Wiring</h3>
+<p>ISP router → Pi's built-in Ethernet port. Pi's USB Ethernet adapter → Wi-Fi access point. Every device then connects to that access point.</p>
+<h3>Installing</h3>
+<p>On the Pi, from the project folder, run <code>sudo ./deploy/setup-pi.sh</code>. It installs everything, gives the
+LAN side the address <code>192.168.50.1</code>, hands out network settings to devices, starts the service and asks
+you for a dashboard password. The dashboard is then at <code>http://192.168.50.1:8080</code>.</p>
+<h3>Then</h3>
+<ol>
+  <li>Set the access point to access-point / bridge mode (no DHCP of its own).</li>
+  <li>Turn off the ISP router's Wi-Fi and change its admin password.</li>
+  <li>Move your devices to <b>adults</b>, consoles to <b>consoles</b>; leave children's devices where they are.</li>
+  <li>Turn on <b>client / AP isolation</b> on the access point if it has the option (stops devices talking to each other directly).</li>
+  <li>Keep the Pi and routers where children can't reach the cables.</li>
+</ol>
+<h3>Trying it on a PC first</h3>
+<p>The same program runs on Windows or Mac in <b>monitor mode</b>: site filtering for anything that uses it as its DNS
+server, the full dashboard, and traffic analysis of that PC. Nothing is blocked inline in monitor mode - that needs the Pi.
+<code>tools/replay.py</code> runs the Pi's inspector over a Wireshark capture so you can see what it would have done.</p>
+</section>
+
+<section id="tour" data-title="The dashboard, page by page">
+<h2>The dashboard, page by page</h2>
+<dl class="defs">
+  <dt>Overview</dt><dd>Today at a glance: devices online, sites looked up and blocked, bypass attempts, data used, time per service, and the latest attempts.</dd>
+  <dt>Live</dt><dd>What every device is doing right now, as a sentence ("Likely playing Roblox with YouTube in the background"). Click a device for a live graph of the last 5 minutes by activity, and its current connections. Updates every 2 seconds.</dd>
+  <dt>Health</dt><dd>Is protection working? A score and checks (firewall, tamper watch, lists, outages), a chart of attempts by category over 24 hours, and a card per child's device with a status: <b>Clean</b>, <b>Curious</b>, <b>Persistent</b> or <b>Tampering</b>.</dd>
+  <dt>Devices</dt><dd>Every device seen. Rename them, choose their group, pause them. Each device page shows today's activity timeline, time and data per service, live connections, lookups and bypass attempts. A red <i>identity check</i> badge means its identity looks copied (see "Protecting the gateway").</dd>
+  <dt>Activity</dt><dd>Every connection (device, site, duration, data down/up, blocked or not) and every lookup, filterable by device.</dd>
+  <dt>Alerts</dt><dd>Every attempt to get around the filter, explained in plain English, with a confidence score. <b>Confirmed</b> and <b>Not a bypass</b> teach the scoring; Not a bypass also undoes the block where that's safe.</dd>
+  <dt>Reviews</dt><dd>Downloads and videos held for your decision. <b>Approve</b> lets that device use the site again; <b>Deny</b> keeps it blocked for that device.</dd>
+  <dt>Rules &amp; schedules</dt><dd>Block or allow a site for everyone or a group; internet-off times (e.g. school nights 21:00-07:00); destinations blocked automatically; things you've marked as fine.</dd>
+  <dt>System</dt><dd>Component health, blocklist sizes and update status, inspector counters, password.</dd>
+</dl>
+<h3>Groups</h3>
+<p>Every device belongs to one group, and the group decides its rules. New and unknown devices go into
+<b>quarantine</b> (as strict as kids) until you assign them, so a new phone, a friend's tablet or a device with a changed
+hardware address is filtered automatically.</p>
+<div id="your-groups"></div>
+</section>
+
+<section id="filtering" data-title="Site filtering">
+<h2>Site filtering</h2>
+<p>Each group has a set of <b>categories</b> blocked. When a device looks up a site, the gateway checks:</p>
+<ol>
+  <li>an <b>allow rule</b> (always wins - use it to unblock one site),</li>
+  <li>a <b>block rule</b>,</li>
+  <li>the group's <b>category lists</b>: ads, adult, gambling, VPN/proxy/bypass services, torrents, web mirrors, unlockable search engines.</li>
+</ol>
+<p>The lists come from well-maintained public projects (Hagezi, StevenBlack) plus the gateway's own built-in lists, and
+refresh daily. A blocked site gets "doesn't exist" as its answer. The same checks run again on the site name inside each
+connection, so a site reached without asking the gateway (a hard-coded address, a hosts-file entry) is still caught.</p>
+<p>The gateway also checks the <b>alias chain</b> of every answer: an innocent-looking name that quietly points to a blocked one is blocked too.</p>
+</section>
+
+<section id="adult" data-title="Adult content protection">
+<h2>Adult content protection</h2>
+<p>A blocklist only knows sites someone has already listed. These layers go further, and close the indirect routes.</p>
+<h3>1. SafeSearch and YouTube Restricted Mode, locked on</h3>
+<p>When a child's device looks up Google, Bing, DuckDuckGo or Yandex, the gateway answers with that search engine's
+special "safe" address. The search engine then forces SafeSearch on, whatever the browser settings say - this is the
+mechanism the search engines themselves provide for schools and families. YouTube is answered with its Restricted Mode
+address, which hides mature videos and comments. Search engines that offer no way to lock SafeSearch (Brave Search,
+Startpage, Yahoo and others) are blocked so the locked ones are used instead.</p>
+<h3>2. A second opinion from a family DNS service</h3>
+<p>Children's lookups are answered through <b>Cloudflare for Families</b>, a free service that classifies millions of
+sites - including new ones no blocklist has caught up with - and flags adult and malicious sites. If it flags a site,
+the gateway blocks it even when its own lists don't know it. If the service can't be reached, lookups fall back to the
+normal resolver (and the counter on the System page shows it).</p>
+<h3>3. Reading the site name itself</h3>
+<p>Names containing strong adult terms (porn, xxx, hentai…) are blocked everywhere - in lookups and inside connections.
+In <b>strict</b> mode, weaker terms are blocked too, but only as whole words, so <i>Essex</i>, <i>Middlesex</i> or
+<i>analytics</i> are never caught.</p>
+<h3>4. Translators, caches and archives</h3>
+<p>A blocked site can be viewed <i>through</i> another service: Google Translate's page translator, Google's AMP page
+cache, web archives and "reader" sites. The page then comes from the third party's address, so the blocklist never
+sees the real site. The gateway handles this two ways:</p>
+<ul>
+  <li>Translator and AMP-cache addresses carry the real site in their name (<code>www-example-com.translate.goog</code>).
+  The gateway <b>decodes</b> it and checks the real site against the lists, the name heuristics and the family DNS service.
+  Ordinary translations still work.</li>
+  <li>Web archives and page caches (archive.ph, the Wayback Machine…) are blocked for children.</li>
+</ul>
+<h3>5. Video from sites nobody has listed</h3>
+<p>The monitor can tell video from other traffic by its shape (big bursts with pauses). In <b>strict</b> mode, video
+streaming from a site that isn't a known video service (YouTube, Netflix, Vimeo, BBC, Khan Academy… - editable) is
+<b>cut and held for your review</b>. This catches adult and pirate streaming sites that no list knows about yet. Approve
+once and that site is fine for that device from then on.</p>
+<h3>6. Everything else that already applies</h3>
+<p>VPNs, proxies, Tor, encrypted DNS, iCloud Private Relay, disguised tunnels and direct-IP connections are all blocked
+(see "Stopping workarounds") - those are the usual ways to reach blocked content "somewhere else".</p>
+<h3>What it can't do</h3>
+<ul>
+  <li><b>Adult content inside allowed platforms.</b> Reddit, X/Twitter, Discord, Telegram, Tumblr and similar host adult
+  material behind encryption; the gateway sees "reddit.com", not which community. If that's a concern, block the platform
+  for children with a rule, and use the app's own safety settings.</li>
+  <li><b>Images and video already on the device</b>, or shared by message, AirDrop, Bluetooth or USB.</li>
+  <li><b>Mobile data.</b> Use the phone's own controls (Screen Time / Family Link) as well.</li>
+</ul>
+<div id="your-adult"></div>
+</section>
+
+<section id="bypass" data-title="Stopping workarounds">
+<h2>Stopping workarounds</h2>
+<p>Every known way around a home filter, and what the gateway does about it. Each layer works on its own, so
+something that slips past one is caught by the next.</p>
+<table>
+<thead><tr><th>Workaround</th><th>What the gateway does</th></tr></thead>
+<tbody>
+<tr><td>Using a different DNS server (8.8.8.8, 1.1.1.1…)</td><td>Every DNS question is redirected to the gateway, whatever server it was meant for - and flagged.</td></tr>
+<tr><td>Encrypted DNS in the browser or phone (DoH / DoT, "Private DNS")</td><td>Public encrypted-DNS servers are blocked by name and address; Firefox is told to stay off it; the phone falls back to normal DNS.</td></tr>
+<tr><td>VPN apps (free or paid)</td><td>VPN websites and apps' login servers are blocked; known VPN server addresses (Mullvad, Proton, Tor, Cloudflare WARP…) are blocked; VPN protocols can't leave a child's device at all.</td></tr>
+<tr><td>"Stealth" VPNs disguised as web traffic</td><td>Fake web traffic fails the inspector's check that it's genuine; real-encryption disguises connect to addresses the gateway never handed out; anything left over is caught by its behaviour (see below).</td></tr>
+<tr><td>Browser-built-in VPNs (Opera, Brave, Edge)</td><td>Their servers are blocked.</td></tr>
+<tr><td>Proxy websites ("unblock any site")</td><td>Blocked by category; most are also caught by name.</td></tr>
+<tr><td>Tor Browser</td><td>Tor relays and download sites are blocked; its hidden "bridges" use either non-web protocols (blocked) or tricks the inspector rejects.</td></tr>
+<tr><td>iCloud Private Relay</td><td>Switched off using Apple's own network mechanism.</td></tr>
+<tr><td>Hiding the site name (Encrypted Client Hello)</td><td>Browsers are never given the keys it needs; connections that try it anyway are reset.</td></tr>
+<tr><td>Typing an IP address / editing the hosts file</td><td>Connections to addresses the gateway didn't hand out are refused.</td></tr>
+<tr><td>A blocked site behind a shared address (CDNs)</td><td>The site name inside the connection is checked against the lists as well.</td></tr>
+<tr><td>Web archives, translators, caches</td><td>Blocked or decoded and checked (see Adult content protection).</td></tr>
+<tr><td>Smuggling data through DNS ("DNS tunnelling")</td><td>Detected from streams of long random names; the domain is blocked for that device.</td></tr>
+<tr><td>Splitting traffic into tiny pieces to dodge inspection</td><td>The inspector reassembles them; anything still unfinished after its window is treated as an evasion attempt.</td></tr>
+<tr><td>Anything else that hides inside genuine encryption</td><td>The <b>behaviour detector</b> spots a long, heavy connection carrying most of a device's traffic while the device stops making DNS lookups - the signature of a tunnel - and blocks it.</td></tr>
+</tbody></table>
+</section>
+
+<section id="torrents" data-title="Torrents">
+<h2>Torrents</h2>
+<p>Torrent clients download pieces of files from many strangers at once. The gateway recognises them by: torrent sites,
+trackers and the servers new clients use to find peers (blocked by name); the BitTorrent handshake, even when hidden on a
+web port; tracker announcements; the DHT and uTP protocols; a device trying to reach dozens of peers within a minute
+(catches fully encrypted clients); and torrent clients announcing themselves on your home network. Children's devices
+can't use the protocols torrents need anyway, so torrents are blocked several times over.</p>
+</section>
+
+<section id="tamper" data-title="Protecting the gateway itself">
+<h2>Protecting the gateway itself</h2>
+<p>A skilled child may attack the filter rather than avoid it. The <b>tamper watch</b> listens (without interfering) to
+the home network. Its one rule: automatic defences can <b>take access away, never give it</b>.</p>
+<table>
+<thead><tr><th>Countermeasure</th><th>Response</th></tr></thead>
+<tbody>
+<tr><td>Copying a parent's device identity (MAC address)</td><td>Every operating system asks for network settings in its own characteristic way (its "DHCP fingerprint"). A laptop wearing Dad's phone's address asks differently, so that address is treated as filtered until a parent clicks <b>It's me</b>.</td></tr>
+<tr><td>Two devices sharing one identity</td><td>The fingerprint flips back and forth - flagged as a clone.</td></tr>
+<tr><td>Changing a device's MAC address to escape the kids' group</td><td>A "new" device with the same fingerprint and name keeps the kids' group. Copying an adult device's details gains nothing.</td></tr>
+<tr><td>Pretending to be the gateway (ARP spoofing)</td><td>The gateway re-announces its real address so other devices recover, and pauses the attacker.</td></tr>
+<tr><td>Claiming another device's address</td><td>The real owner is pinned; the attacker paused.</td></tr>
+<tr><td>Running a DHCP server or IPv6 router</td><td>Flagged; the device paused.</td></tr>
+<tr><td>Scanning the gateway, trying its login</td><td>Silently ignored and flagged; scans pause the device; wrong dashboard passwords lock out after 5 tries.</td></tr>
+<tr><td>Manual DNS or IP settings</td><td>Redirected / still filtered by identity, and flagged.</td></tr>
+<tr><td>Sharing a connection to hide devices (hotspot, VM, travel router)</td><td>Spotted from the extra "router hop" in the traffic; everything behind it gets this device's rules.</td></tr>
+<tr><td>Unplugging the gateway</td><td>Children's devices have no internet while it's down (it fails closed), and the gap is reported.</td></tr>
+</tbody></table>
+<p>Automatic pauses only ever apply to filtered devices and last 30 minutes (configurable).</p>
+</section>
+
+<section id="reviews" data-title="Download and video review">
+<h2>Download and video review</h2>
+<p>When a connection becomes a sustained one-way transfer, it's a download. Encrypted downloads can't be opened, so
+they're judged by <b>where they come from and who's downloading</b>: file-sharing, APK and cracked-software sites, torrent sites,
+sites first seen today, plain-HTTP executables, and whether this device has been trying to get around the filter. App
+stores, game platforms and system updates are trusted. Every point of the score is shown.</p>
+<p>At 50 or more the download is cut and that site held for that device until you <b>Approve</b> (it can be retried)
+or <b>Deny</b> (the site stays blocked for that device). With plain HTTP the file name is visible, so a risky file
+(<code>.exe</code>, <code>.apk</code>, <code>.zip</code>…) is stopped before the first byte. Videos from unknown sites (see Adult content protection) appear here too.</p>
+</section>
+
+<section id="activity" data-title="Live activity analysis">
+<h2>Live activity analysis</h2>
+<p>Different activities move data in recognisably different ways, even when everything is encrypted:</p>
+<table><thead><tr><th>Activity</th><th>Looks like</th></tr></thead><tbody>
+<tr><td>Gaming</td><td>Small packets, a steady 10-60 a second in both directions, no pauses</td></tr>
+<tr><td>Video</td><td>Large bursts with pauses (the player fetches a few seconds at a time)</td></tr>
+<tr><td>Calls</td><td>Steady, about the same in both directions</td></tr>
+<tr><td>Downloading</td><td>One direction, flat out, no pauses</td></tr>
+<tr><td>Music, social, browsing</td><td>Known services, or short small connections to many sites</td></tr>
+</tbody></table>
+<p>Each connection is classified every 2 seconds and the results combined: the interactive activity in front, video or
+music behind it. That's how "Likely playing an online game with YouTube in the background" comes about. It's an
+inference - the confidence and the reasons are always shown.</p>
+</section>
+
+<section id="confidence" data-title="Confidence scores">
+<h2>Confidence scores</h2>
+<p>Every alert says how likely it is to be a <b>deliberate</b> attempt rather than an app behaving oddly. It combines a base
+rate for that kind of event (splitting a connection into 1-byte pieces is almost never accidental; a connection by
+address is often just an app), the device's behaviour (several different tricks in a day raise every score) and
+<b>your reviews</b>: each <i>Confirmed</i> or <i>Not a bypass</i> recalibrates how much that kind of alert is trusted
+in your house. Hover over any score to see its reasoning and when it could be innocent.</p>
+</section>
+
+<section id="schedules" data-title="Pauses and schedules">
+<h2>Pauses and schedules</h2>
+<p><b>Pause</b> a device for 15 minutes, an hour, or until you resume it. <b>Schedules</b> turn the internet off for a
+group or every device at set times (e.g. school nights 21:00-07:00), including windows that cross midnight. A paused device
+can't look anything up and its connections are refused straight away.</p>
+</section>
+
+<section id="tech" data-title="The technology, explained">
+<h2>The technology, explained</h2>
+<p>Plain-English explanations of the technology involved - useful for understanding the alerts, and for talking to
+children about what they've tried.</p>
+
+<h3 id="tech-ip">Addresses, packets and ports</h3>
+<p>Every device and server on the internet has an <b>IP address</b> (like <code>142.250.180.14</code>). Data travels in small
+<b>packets</b>, each labelled with where it's from and where it's going. A <b>port</b> number says which service it's for:
+443 is secure websites, 80 plain websites, and other numbers are used by games, VPNs and so on. The gateway sees these
+labels on every packet, even when the contents are encrypted.</p>
+
+<h3 id="tech-dns">DNS - the internet's phone book</h3>
+<p>People use names (youtube.com); computers use numbers. Before connecting, a device asks a <b>DNS server</b> "what's
+the address for youtube.com?". Whoever answers that question controls where the device goes - which is why the gateway
+answers every DNS question itself, and why "use a different DNS server" is the first thing people try to get around a filter.</p>
+
+<h3 id="tech-https">HTTPS, encryption and the site name</h3>
+<p>Almost every website now uses <b>HTTPS</b>: the connection is encrypted, so nobody in between can read the pages,
+searches or passwords. But the very first message of each connection - the "hello" - includes the <b>name of the site</b>
+being visited (called the SNI), unencrypted, so that big servers hosting many sites know which one is wanted. That's
+what lets the gateway know a connection is to youtube.com without being able to see which video. A newer feature called
+<b>Encrypted Client Hello (ECH)</b> can hide even that; the gateway prevents browsers from using it on children's devices.</p>
+
+<h3 id="tech-vpn">VPNs - what they are, and how they're used to get round filters</h3>
+<p>A <b>VPN</b> (Virtual Private Network) creates an encrypted <b>tunnel</b> from a device to a VPN server somewhere else.
+Everything the device does online travels inside that tunnel and only comes out at the far end. To any network in between -
+including a home filter - all the device's traffic looks like one long encrypted connection to the VPN server. The filter can't see
+the sites inside, so it can't block them. That is why VPNs are the most popular way to "escape" a filter: install a free
+VPN app, tap Connect, and every block disappears - <i>unless</i> the network stops the tunnel from being set up.</p>
+<figure class="diagram">
+<svg viewBox="0 0 860 196" role="img" aria-label="Without protection a VPN tunnel passes through the home network to a VPN server which then reaches any site; the gateway stops the tunnel at several points">
+  <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+  <text x="365" y="30" font-size="12" fill="var(--muted)" text-anchor="middle">encrypted tunnel - its contents are invisible to the home network</text>
+  <rect x="120" y="80" width="490" height="30" rx="15" fill="none" stroke="var(--cat-vpn)" stroke-width="3" stroke-dasharray="7 5"/>
+  <g font-size="13" fill="var(--text)" text-anchor="middle">
+    <rect x="10" y="60" width="120" height="70" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+    <text x="70" y="92" font-weight="600">Child's</text><text x="70" y="110">device</text>
+    <rect x="280" y="56" width="180" height="78" rx="10" fill="var(--panel-2)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="370" y="88" font-weight="600">Home gateway</text><text x="370" y="108" font-size="12">only sees "a tunnel to X"</text>
+    <rect x="600" y="60" width="110" height="70" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+    <text x="655" y="92" font-weight="600">VPN</text><text x="655" y="110">server</text>
+    <rect x="750" y="60" width="100" height="70" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+    <text x="800" y="92" font-weight="600">Any</text><text x="800" y="110">website</text>
+  </g>
+  <g stroke="var(--muted)" stroke-width="2" marker-end="url(#arr2)"><line x1="710" y1="95" x2="746" y2="95"/></g>
+  <g font-size="12" fill="var(--text)">
+    <text x="20" y="166">This gateway stops the tunnel being built: VPN apps can't reach their servers, VPN protocols can't leave the device,</text>
+    <text x="20" y="184">disguised tunnels fail the inspector's checks, and tunnels that look genuine are caught by their behaviour.</text>
+  </g>
+</svg>
+</figure>
+<p><b>The kinds children come across:</b></p>
+<ul>
+  <li><b>Free VPN apps</b> from app stores (often funded by ads or by selling data). Usually WireGuard, OpenVPN or IPsec underneath - recognisable protocols the gateway blocks outright, and their login and server-list sites are blocked too.</li>
+  <li><b>Paid / privacy VPNs</b> (Proton, Mullvad, NordVPN…). Same as above, plus published server lists the gateway downloads and blocks.</li>
+  <li><b>"Stealth" or "obfuscated" modes</b> that disguise the tunnel as ordinary web traffic on port 443. Some fake a web connection (caught: not a real secure handshake). Some wrap the tunnel in genuine encryption (caught: the server's address was never handed out by the gateway, or it's on a VPN list, or its behaviour gives it away).</li>
+  <li><b>VPNs built into browsers</b> (Opera, Brave, Microsoft Edge "Secure Network"). Their servers are blocked.</li>
+  <li><b>A VPN or proxy the child set up themselves</b> on a cloud server or a friend's computer. Not on any list - which is exactly what the "addresses the gateway handed out" check and the behaviour detector are for.</li>
+</ul>
+<p><b>Signs a child has been trying:</b> VPN and proxy alerts on the Alerts page, a device marked <i>Curious</i> or
+<i>Persistent</i> on the Health page, or a sudden "no internet" complaint from a device with a VPN app installed (the app is
+trying to connect and being refused).</p>
+
+<h3 id="tech-proxy">Proxies and "unblocker" websites</h3>
+<p>A <b>proxy</b> fetches a page on someone's behalf. Web proxy sites ("unblock any website") let you type a blocked
+address into their page and show you the result; the network only sees the proxy site. Translators, page caches and web
+archives can be used the same way without meaning to be proxies. The gateway blocks proxy sites by category and handles
+the others as described in Adult content protection.</p>
+
+<h3 id="tech-tor">Tor</h3>
+<p><b>Tor</b> sends traffic through three volunteer-run relays around the world, each only knowing the next step. It's
+used for privacy, and also to reach anything a network blocks. The public relay addresses are published, and the gateway
+blocks them; Tor's hidden "bridges" either use non-web protocols (blocked) or disguises the inspector rejects.</p>
+
+<h3 id="tech-doh">Encrypted DNS and private relays</h3>
+<p><b>DNS over HTTPS (DoH)</b> and <b>DNS over TLS (DoT, Android's "Private DNS")</b> send DNS questions encrypted to a
+public server, so the home network can't answer or see them - which would skip every name-based block. The gateway blocks
+those servers and the apps fall back to normal DNS. <b>iCloud Private Relay</b> (Apple) is a VPN-like relay for Safari;
+Apple provides a way for networks to switch it off, which the gateway uses.</p>
+
+<h3 id="tech-mobile">Mobile data, hotspots and other networks</h3>
+<p>A phone on <b>4G/5G</b>, or connected to a friend's hotspot or a neighbour's Wi-Fi, isn't on your network at all. No
+home filter can see that traffic. Use the phone's own parental controls (Apple Screen Time, Google Family Link), mobile
+network content filters, and agreements about where devices are used.</p>
+
+<h3 id="tech-lan">MAC addresses, DHCP and ARP</h3>
+<p>Each network adapter has a <b>MAC address</b> - an identity used on the local network. The gateway attaches each
+device's group to it. When a device joins, it asks for its network settings using <b>DHCP</b>; the exact list of things
+it asks for differs between operating systems (its fingerprint). <b>ARP</b> is how devices on the same network find each
+other's MAC addresses; <b>ARP spoofing</b> is lying about it to intercept other devices' traffic. MAC addresses can be
+changed in software, which is why the gateway also uses fingerprints and treats any unknown identity as filtered.</p>
+
+<h3 id="tech-p2p">Torrents and peer-to-peer</h3>
+<p>A <b>torrent</b> downloads a file in pieces from many other users ("peers") at the same time, while uploading pieces to
+others. It's widely used for pirated films, games and software - which often carry malware - and the uploading can
+expose a household to copyright notices. See Torrents for how they're recognised.</p>
+
+<h3 id="tech-dpi">Deep packet inspection, and what encryption hides</h3>
+<p><b>Deep packet inspection</b> means looking beyond a packet's address labels into its contents. With encryption,
+the only readable contents are each connection's opening messages - so the gateway inspects exactly those (the site name,
+whether it's a genuine secure connection, which protocol it really is) and then watches the <i>shape</i> of the rest
+(sizes, timing, direction). It deliberately does not decrypt anything: that would require installing a special certificate on
+every device, break many apps, and expose children's passwords and messages.</p>
+
+<h3 id="tech-incognito">Incognito / private browsing</h3>
+<p>Private browsing only stops the <i>device</i> remembering history. It doesn't hide anything from the network - the
+gateway sees and filters private-browsing traffic exactly like normal browsing.</p>
+</section>
+
+<section id="limits" data-title="What it can't do">
+<h2>What it can't do, and what to pair it with</h2>
+<ul>
+  <li><b>Mobile data and other networks</b> - use device controls (Screen Time / Family Link) as well.</li>
+  <li><b>Content inside allowed apps and platforms</b> - it sees reddit.com, not which community. Use apps' own safety settings, or block the platform.</li>
+  <li><b>Page-level history</b> - it shows sites and services, not individual pages or searches.</li>
+  <li><b>Device-to-device traffic</b> inside your Wi-Fi - turn on AP / client isolation on the access point.</li>
+  <li><b>Physical access</b> - keep the Pi and routers out of reach, and the ISP router's Wi-Fi off.</li>
+  <li><b>Inferences can be wrong</b> - activity descriptions and alerts are best judgements with their reasoning shown.</li>
+</ul>
+<p>Technical controls work best alongside clear, agreed rules. Many families find that being open about the filter -
+and talking through an alert rather than just punishing it - leads to fewer attempts.</p>
+</section>
+
+<section id="faq" data-title="Troubleshooting &amp; FAQ">
+<h2>Troubleshooting &amp; FAQ</h2>
+<dl class="defs">
+  <dt>A site that should be fine is blocked.</dt><dd>Find it on the Activity page (Lookups, "blocked only") to see why, then add an <b>allow rule</b> on Rules &amp; schedules for the group or everyone.</dd>
+  <dt>An online game doesn't work.</dt><dd>Most games need UDP traffic. Put the console or gaming PC in the <b>consoles</b> group - VPN and torrent protocols stay blocked there.</dd>
+  <dt>An app keeps failing with "no internet".</dt><dd>Check Alerts for that device. If it's an app with built-in server addresses (some messaging apps), click <b>Not a bypass</b> on the alert to let its destination through.</dd>
+  <dt>A school or news site's video was held.</dt><dd>Approve it on the Reviews page - that site is then fine for that device. Add sites you trust everywhere to <code>adult.video_sites</code> in the config.</dd>
+  <dt>My own device shows "identity check".</dt><dd>Its network fingerprint changed (an OS update or new adapter). Click <b>It's me</b> on the device page.</dd>
+  <dt>I'm locked out of the dashboard.</dt><dd>On the Pi: <code>sudo /opt/parental-gateway/.venv/bin/python run.py --set-password</code>. Only devices in the adults group can reach the dashboard once at least one is assigned.</dd>
+  <dt>The gateway stopped - is the internet down for everyone?</dt><dd>Briefly, yes. The firewall stays in place, so adults' open connections carry on and children's new web connections are refused (it fails closed). But the gateway also answers everyone's DNS lookups, so <i>new</i> lookups fail for every device until the service is back - systemd restarts it automatically within a few seconds.</dd>
+  <dt>Will this slow the internet?</dt><dd>Only the opening packets of each connection are inspected; everything after that is forwarded by the kernel at full speed.</dd>
+</dl>
+</section>
+
+<section id="privacy" data-title="Privacy and data">
+<h2>Privacy and data</h2>
+<p>Everything stays on the gateway - nothing is sent to any outside service except DNS questions (to Cloudflare, and
+Cloudflare for Families for children's devices) and the daily blocklist downloads. It stores lookups, connections
+(site, timing, data volume), activity summaries and alerts for 30 days by default; no page contents, messages or passwords
+are ever seen. Adults' devices are not filtered or inspected, though their sites and data use are recorded unless
+<code>flows.log_trusted_devices</code> is turned off.</p>
+</section>

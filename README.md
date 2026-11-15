@@ -21,6 +21,11 @@ traffic passes through it. It:
 - shows **live what each device is doing**, e.g. *"Likely playing an online
   game with YouTube in the background"*, with a live graph and a daily timeline
 - **holds suspicious downloads** for you to approve or deny
+- goes **beyond blocklists for adult content**: locked SafeSearch, a family-DNS
+  second opinion, site-name heuristics, decoding translator/cache proxies, and
+  holding video from unknown sites for review
+- has a **Guide** inside the dashboard explaining every feature, how it works,
+  and the technology involved (DNS, HTTPS, VPNs, proxies, Tor…)
 - is controlled from a **browser dashboard** with a login
 
 It works at the level of **site names** (`youtube.com`), not individual pages,
@@ -61,6 +66,27 @@ For example, Mullvad has to get past three separate layers:
 3. Its udp2tcp and Shadowsocks modes aren't real TLS, so they fail the protocol check on 443.
 
 ProtonVPN Stealth *is* real TLS, but it connects to server IPs the Pi's DNS never handed out, and those IPs are on the Proton server list anyway.
+
+## Adult content protection
+
+A blocklist only knows sites someone has already listed. For children's
+devices the gateway adds:
+
+| Layer | What it does |
+|---|---|
+| **SafeSearch, locked** | Google, Bing, DuckDuckGo and Yandex lookups are answered with their locked "safe" addresses; YouTube with Restricted Mode (strict or moderate). These are the search engines' own mechanisms for schools and families. A connection to an *unlocked* address is refused, because the gateway never handed it out. |
+| **Unlockable search engines blocked** | Brave Search, Startpage, Yahoo, Qwant… (editable list) |
+| **Family DNS second opinion** | Children's lookups go through Cloudflare for Families (`1.1.1.3`). Anything it flags (adult or malware) is blocked even if no list has it yet. If it can't be reached, lookups fall back to the normal resolver. |
+| **Site-name heuristics** | Strong adult terms anywhere in a name are blocked in lookups *and* inside connections. Weaker terms are blocked in strict mode as whole words only (Essex, Middlesex and analytics are safe). |
+| **Translator / cache proxies decoded** | `www-example-com.translate.goog` and AMP-cache names carry the real site, so it's decoded and checked against the lists, the heuristics and the family DNS. Ordinary translations keep working. |
+| **Web archives and page caches blocked** | archive.ph, the Wayback Machine, 12ft.io… (editable list) |
+| **Video from unknown sites held** | Streaming video from a site that isn't a known video service is cut and held on the Reviews page (strict mode). This catches unlisted adult and pirate streaming sites. Approve once and that site is fine for that device. |
+
+`adult.mode` is `strict` (all of the above) or `standard` (no weak-term
+blocking; unknown video is only reported). A group can override it with
+`adult_protection:`. The honest limits: adult material *inside* allowed
+platforms (Reddit, X, Discord, Telegram) is behind encryption, so block the
+platform if needed. Mobile data needs device-level controls.
 
 ## Torrents
 
@@ -310,6 +336,11 @@ so there's never an unfiltered window. Machine-specific settings live in
   data, blocked or not) and every lookup.
 - **Alerts:** every bypass attempt in plain English, with its confidence and
   *Confirmed* / *Not a bypass* / *Dismiss*.
+- **Reviews:** downloads and videos held for your decision (Approve / Deny).
+- **Guide:** the full manual, searchable, with a live summary of your own
+  settings. It covers how each protection works and plain-English explainers
+  of DNS, HTTPS, VPNs (and how they're used to get round filters), proxies,
+  Tor, encrypted DNS, MAC/DHCP/ARP, torrents and what encryption hides.
 - **Rules & schedules:** block/allow sites for everyone or a group,
   internet-off times, automatically blocked destinations.
 - **System:** component health, blocklist status, inspector counters, password.
@@ -336,7 +367,7 @@ Categories, lists, detector thresholds and schedules are all in
 ## Tests
 
 ```bash
-pytest -q                               # 79 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads...)
+pytest -q                               # 111 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
@@ -350,7 +381,8 @@ power cut). It also checks the activity analysis: a console playing a game with
 YouTube in the background must be described exactly that way. And it checks the
 download guard end to end: a file-sharing download cut mid-transfer, retries
 blocked until approved, then allowed; a plain-HTTP `.exe` stopped before it
-starts, then denied. **120 checks pass.** Finally it kills the service and
+starts, then denied. The adult-content layers are checked end to end, and so
+is the in-app guide. **147 checks pass.** Finally it kills the service and
 confirms kids' access fails closed while the parent is unaffected. (The IPv6 router check is
 skipped on kernels booted without IPv6.)
 
@@ -370,7 +402,9 @@ guardian/
   lanwatch.py          passive LAN defences (ARP/DHCP/RA spoofing, MAC cloning, torrent discovery)
   confidence.py        "how deliberate was this?" scoring + review calibration
   activity.py          traffic-shape classifier: gaming / video / call / download / ...
-  downloads.py         download guard: detect, score, hold for review
+  downloads.py         download guard: detect, score, hold for review (downloads + unknown video)
+  adult.py             SafeSearch, family DNS, name heuristics, proxy decoding
+  static/docs.html     the in-app Guide
   gateway/             nftables ruleset, NFQUEUE runner
   lists.py             blocklist + VPN-server list downloads
   webapp.py, static/   dashboard

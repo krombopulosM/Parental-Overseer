@@ -1,0 +1,19 @@
+# Search engines whose SafeSearch can't be locked on from the network.
+# Google, Bing, DuckDuckGo and Yandex CAN be (and are), so children are
+# steered to those. Remove any line here you're happy to allow.
+search.brave.com
+startpage.com
+mojeek.com
+qwant.com
+search.yahoo.com
+presearch.com
+yep.com
+metager.org
+metager.de
+searx.be
+searx.org
+searx.space
+searxng.org
+gibiru.com
+kagi.com
+search.marginalia.nu

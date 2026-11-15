@@ -69,7 +69,7 @@ def create_app(g) -> FastAPI:
 
     @app.get("/static/{name}")
     def static_file(name: str):
-        if name not in ("app.js", "style.css"):
+        if name not in ("app.js", "style.css", "docs.html"):
             raise HTTPException(404)
         return FileResponse(os.path.join(static, name), headers={"Cache-Control": "no-store"})
 
@@ -524,7 +524,7 @@ def create_app(g) -> FastAPI:
         r = g.downloads.approve(rid)
         if not r:
             raise HTTPException(404)
-        for a in g.db.query("SELECT id FROM alerts WHERE kind='download_held' AND device_id=? AND domain=? "
+        for a in g.db.query("SELECT id FROM alerts WHERE kind IN ('download_held','video_held') AND device_id=? AND domain=? "
                             "AND review IS NULL", (r["device_id"], r["site"])):
             g.db.review_alert(a["id"], "fp")
         g.refresh_allowlist()
@@ -538,7 +538,7 @@ def create_app(g) -> FastAPI:
         if not r["site"].startswith("ip:"):
             g.db.add_rule("device", r["device_id"], r["site"], "block")
             g.policy.reload()
-        for a in g.db.query("SELECT id FROM alerts WHERE kind='download_held' AND device_id=? AND domain=? "
+        for a in g.db.query("SELECT id FROM alerts WHERE kind IN ('download_held','video_held') AND device_id=? AND domain=? "
                             "AND review IS NULL", (r["device_id"], r["site"])):
             g.db.review_alert(a["id"], "tp")
         g.refresh_allowlist()
@@ -681,6 +681,32 @@ def create_app(g) -> FastAPI:
             "reviews": {"reviewed": sum(r["reviewed"] for r in rev), "fp": sum(r["fp"] or 0 for r in rev),
                         "by_kind": [{"kind": r["kind"], "title": KINDS.get(r["kind"], (r["kind"],))[0],
                                      "reviewed": r["reviewed"], "fp": r["fp"] or 0} for r in rev]},
+        }
+
+    # ------------------------------------------------------------ guide
+    @app.get("/api/setup-summary")
+    def setup_summary():
+        """The settings that matter, in words, for the Guide's 'Your setup' panel."""
+        c = g.cfg
+        a, d, tm = c.get("adult") or {}, c.get("downloads") or {}, c.get("tamper") or {}
+        st = g.status()
+        return {
+            "mode": g.mode,
+            "groups": [{"name": n, "filtered": gc["filtered"], "categories": gc.get("categories", []),
+                        "udp": gc.get("allow_udp"), "dns_consistency": gc.get("dns_consistency"),
+                        "adult": gc.get("adult_protection") or (a.get("mode") if gc["filtered"] else "off"),
+                        "downloads": gc.get("downloads") or (d.get("policy") if gc["filtered"] else "off"),
+                        "is_default": n == c["default_group"]}
+                       for n, gc in c["groups"].items()],
+            "adult": {"mode": a.get("mode"), "safesearch": a.get("safesearch"),
+                      "youtube": a.get("youtube_restricted"), "family_dns": a.get("family_dns"),
+                      "unknown_video": a.get("unknown_video")},
+            "downloads": {"policy": d.get("policy"), "threshold": d.get("suspicious_score")},
+            "tamper": {"auto_pause_minutes": tm.get("auto_pause_minutes"),
+                       "auto_quarantine": tm.get("auto_quarantine_confidence")},
+            "lists": {k.split(":", 1)[1]: v["entries"] for k, v in st["lists"]["status"].items()},
+            "fail_open": c["enforcement"].get("fail_open"),
+            "poll": c["flows"].get("poll_interval"),
         }
 
     # ------------------------------------------------------------ system

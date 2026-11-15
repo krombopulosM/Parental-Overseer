@@ -24,6 +24,7 @@ CATEGORIES = {
     "torrent": "Torrents",
     "tamper": "Tampering with the gateway",
     "download": "Suspicious downloads",
+    "adult": "Adult content",
     "info": "Info",
 }
 
@@ -64,6 +65,13 @@ KIND_META: dict[str, tuple] = {
     "hidden_router":      ("tamper", 45, "none", "a virtual machine or a phone hotspot"),
     "gateway_offline":    ("tamper", 30, "none", "a power cut or a planned reboot"),
     "download_held":      ("download", 50, "none", "a legitimate file from a site the gateway doesn't know"),
+    "adult_site":         ("adult", 65, "none", "pop-up ads and redirects can trigger lookups nobody chose"),
+    "adult_keyword":      ("adult", 60, "none", "an innocent site whose name happens to contain the word"),
+    "adult_family_dns":   ("adult", 65, "none", "the family filter also blocks malware and occasionally misjudges"),
+    "adult_proxy":        ("adult", 90, "none", "very rare by accident"),
+    "content_mirror":     ("adult", 50, "none", "homework research using a web archive"),
+    "unsafe_search":      ("adult", 40, "none", "simply preferring another search engine"),
+    "video_held":         ("adult", 50, "none", "a normal site with its own video player (news, school)"),
     "new_device":         ("info", None, "none", ""),
 }
 

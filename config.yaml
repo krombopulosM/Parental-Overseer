@@ -40,19 +40,19 @@ groups:
     categories: [ads]
   kids:
     filtered: true
-    categories: [ads, adult, gambling, bypass, torrent]
+    categories: [ads, adult, gambling, bypass, torrent, mirrors, unsafe_search]
     allow_udp: false          # web only: blocks WireGuard, OpenVPN-UDP, IPsec, QUIC, Shadowsocks-UDP...
     require_sni: true         # encrypted connections must name the site they're going to
     dns_consistency: "enforce"  # only connect to IPs the gateway's DNS handed out (enforce | log | off)
   consoles:                   # games need UDP; VPN signatures + IP lists still apply
     filtered: true
-    categories: [ads, adult, gambling, bypass, torrent]
+    categories: [ads, adult, gambling, bypass, torrent, mirrors, unsafe_search]
     allow_udp: true
     require_sni: true
     dns_consistency: "log"
   quarantine:
     filtered: true
-    categories: [ads, adult, gambling, bypass, torrent]
+    categories: [ads, adult, gambling, bypass, torrent, mirrors, unsafe_search]
     allow_udp: false
     require_sni: true
     dns_consistency: "enforce"
@@ -73,6 +73,10 @@ categories:
   # The next two aren't blocked by default (no group lists them); the download
   # guard uses them to judge where a download comes from. Add one to a group's
   # categories to block those sites outright.
+  mirrors:                    # web archives / page caches that show another site's content
+    files: [blocklists/builtin/mirrors.txt]
+  unsafe_search:              # search engines whose SafeSearch can't be locked on
+    files: [blocklists/builtin/unsafe_search.txt]
   piracy:                     # cracked software / warez / streaming-piracy sites
     urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/anti.piracy-onlydomains.txt]
   filehost:                   # file lockers and APK download sites
@@ -130,6 +134,24 @@ downloads:
                      deb, rpm, iso, img, zip, rar, 7z, torrent]
   trusted_services: [apple, microsoft, google, steam, epicgames, xbox, playstation, nintendo, minecraft,
                      roblox, spotify, netflix, youtube]
+
+# ---------------------------------------------------------------- adult content (filtered groups)
+adult:
+  # strict | standard | off. A group can override with `adult_protection:`.
+  #   standard: SafeSearch, family DNS, strong adult terms in names, proxy decoding
+  #   strict:   + weaker terms (whole words), + video from unknown sites held for review
+  mode: strict
+  safesearch: true               # Google / Bing / DuckDuckGo / Yandex locked to their safe versions
+  youtube_restricted: strict     # strict | moderate | off
+  # A second opinion on every filtered lookup. Cloudflare for Families blocks
+  # adult content + malware, including sites no blocklist has yet.
+  family_dns: ["1.1.1.3", "1.0.0.3"]
+  unknown_video: review          # review | block | alert | off - video from sites that aren't known video services
+  video_min_bytes: 2000000
+  video_sites: [vimeo.com, vimeocdn.com, dailymotion.com, dmcdn.net, bbc.co.uk, bbci.co.uk, khanacademy.org,
+                kastatic.org, ted.com, pbs.org, pbskids.org, nationalgeographic.com, nasa.gov, britannica.com,
+                brainpop.com, coursera.org, edx.org, duolingo.com, scratch.mit.edu, code.org, cbeebies.com,
+                itv.com, channel4.com, sky.com, crunchyroll.com, hulu.com, max.com, paramountplus.com]
 
 # ---------------------------------------------------------------- countermeasure defences
 tamper:

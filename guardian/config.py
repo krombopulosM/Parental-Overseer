@@ -45,6 +45,11 @@ DEFAULTS: dict = {
         "protocol_exempt_domains": ["whatsapp.net", "whatsapp.com"],
     },
     "torrent": {"fanout_peers": 25, "window": 60},
+    "adult": {
+        "mode": "strict", "safesearch": True, "youtube_restricted": "strict",
+        "family_dns": ["1.1.1.3", "1.0.0.3"], "family_blocked_answers": ["0.0.0.0", "::"],
+        "unknown_video": "review", "video_min_bytes": 2_000_000, "video_sites": [],
+    },
     "downloads": {
         "policy": "review_suspicious", "min_bytes": 5_000_000, "min_rate": 200_000, "suspicious_score": 50,
         "risky_extensions": ["exe", "msi", "bat", "cmd", "com", "scr", "ps1", "vbs", "js", "jar", "apk", "xapk",

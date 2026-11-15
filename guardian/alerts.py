@@ -44,6 +44,13 @@ KINDS = {
     "hidden_router":      ("Other devices hidden behind this one", "medium"),
     "gateway_offline":    ("Gateway was offline", "medium"),
     "download_held":      ("Suspicious download held for review", "medium"),
+    "adult_site":         ("Adult site blocked", "medium"),
+    "adult_keyword":      ("Site with an adult name blocked", "medium"),
+    "adult_family_dns":   ("Adult site caught by the family DNS filter", "medium"),
+    "adult_proxy":        ("Adult site via a translator / cache proxy", "high"),
+    "content_mirror":     ("Web archive / page-cache mirror blocked", "low"),
+    "unsafe_search":      ("Search engine without enforceable SafeSearch", "low"),
+    "video_held":         ("Video from an unknown site held for review", "medium"),
     "new_device":         ("New device joined the network", "info"),
 }
 

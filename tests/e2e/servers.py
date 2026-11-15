@@ -28,14 +28,25 @@ ZONE = {
     "tunnel.test": "198.51.100.79", "raw.test": "198.51.100.80",
     "rr1---sn-abc.googlevideo.com": "198.51.100.81", "dl.mediafire.com": "198.51.100.82",
     "plain.test": "198.51.100.10",
+    "forcesafesearch.google.com": "198.51.100.83", "restrict.youtube.com": "198.51.100.83",
+    "www.google.com": "198.51.100.84", "www.youtube.com": "198.51.100.84",
+    "hotxxxvideos.test": "198.51.100.10", "spicy-new-site.test": "198.51.100.10",
+    "archive.ph": "198.51.100.10", "search.brave.com": "198.51.100.10", "pornhub.com": "198.51.100.10",
+    "videos.unknown-tube.test": "198.51.100.85",
 }
+FAMILY_FLAGGED = {"spicy-new-site.test"}
 
 
 class Zone(BaseResolver):
+    def __init__(self, family=False):
+        self.family = family
+
     def resolve(self, request, handler):
         reply = request.reply()
         name = str(request.q.qname).rstrip(".").lower()
-        if name in ZONE and QTYPE[request.q.qtype] == "A":
+        if self.family and name in FAMILY_FLAGGED and QTYPE[request.q.qtype] == "A":
+            reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A("0.0.0.0"), ttl=300))   # family filter: blocked
+        elif name in ZONE and QTYPE[request.q.qtype] == "A":
             reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A(ZONE[name]), ttl=300))
         elif name not in ZONE:
             reply.header.rcode = 3
@@ -124,8 +135,9 @@ def main(cert, key):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
     DNSServer(Zone(), address="198.51.100.53", port=53, logger=DNSLogger("-request,-reply")).start_thread()
+    DNSServer(Zone(family=True), address="198.51.100.54", port=53, logger=DNSLogger("-request,-reply")).start_thread()
     for ip in ("198.51.100.10", "198.51.100.66", "198.51.100.77", "198.51.100.79", "198.51.100.81",
-               "198.51.100.82", "9.9.9.9"):
+               "198.51.100.82", "198.51.100.83", "198.51.100.84", "198.51.100.85", "9.9.9.9"):
         tcp((ip, 443), TLSHandler, ctx)
     tcp(("198.51.100.10", 80), HTTPHandler)
     tcp(("192.168.1.1", 80), HTTPHandler)

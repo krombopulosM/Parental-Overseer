@@ -458,5 +458,37 @@ def suite_kid_after_deny():
     check("denied download site now blocked for this device", dns("plain.test")[0], 3)
 
 
+# ---------------------------------------------------------------- adult content
+def _names(ans):
+    return [a.rstrip(".") for a in ans]
+
+
+def suite_kid_adult():
+    rc, ans = dns("www.google.com")
+    check("Google lookups are pointed at locked SafeSearch", (rc, _names(ans)),
+          (0, ["forcesafesearch.google.com", "198.51.100.83"]))
+    check("search over the SafeSearch address works", tls("198.51.100.83", "www.google.com"), "ok")
+    check("an unlocked Google address (never handed out) is refused", tls("198.51.100.84", "www.google.com"), "refused")
+    check("YouTube lookups are pointed at Restricted Mode", _names(dns("www.youtube.com")[1])[:1], ["restrict.youtube.com"])
+    check("known adult site blocked", dns("pornhub.com")[0], 3)
+    check("unlisted site with an adult name blocked", dns("hotxxxvideos.test")[0], 3)
+    check("unlisted site flagged by the family DNS filter blocked", dns("spicy-new-site.test")[0], 3)
+    check("adult site through Google Translate's proxy blocked", dns("www-pornhub-com.translate.goog")[0], 3)
+    check("web archive mirror blocked", dns("archive.ph")[0], 3)
+    check("search engine without lockable SafeSearch blocked", dns("search.brave.com")[0], 3)
+    dns("shared-cdn.test")
+    check("adult name inside a connection to a shared address", tls("198.51.100.10", "www.hotxxxvideos.test"), "reset")
+    dns("videos.unknown-tube.test")
+    t0 = time.time()
+    res, got = _tls_stream("198.51.100.85", "videos.unknown-tube.test", b"VIDEO", 30)
+    check(f"video from an unknown site cut off after {time.time() - t0:.0f}s / {got / 1e6:.1f} MB",
+          res, OneOf("stalled", "reset", "closed"))
+    check("unknown video site held until reviewed", tls("198.51.100.85", "videos.unknown-tube.test"), "reset")
+
+
+def suite_parent_adult():
+    check("parent: Google is not rewritten", _names(dns("www.google.com")[1]), ["198.51.100.84"])
+    check("parent: name heuristics don't apply to adults", dns("hotxxxvideos.test")[0], 0)
+
 if __name__ == "__main__":
     globals()[f"suite_{sys.argv[1]}"]()

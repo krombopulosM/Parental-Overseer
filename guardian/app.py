@@ -59,6 +59,11 @@ class Guardian:
             from .gateway.system import kill_flow
             kill = kill_flow
         self.downloads = DownloadGuard(cfg, self.db, self.lists, self.alerts, kill_flow=kill)
+        from .adult import AdultGuard
+        self.adult = AdultGuard(cfg, self.lists, self.alerts)
+        self.downloads.adult = self.adult
+        self.inspector.adult = self.adult
+        self.resolver.adult = self.adult
         self.inspector.downloads = self.downloads
         if self.monitor is not None:
             self.monitor.downloads = self.downloads

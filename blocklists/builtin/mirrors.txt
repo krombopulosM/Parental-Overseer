@@ -1,0 +1,21 @@
+# Ways to view another site through a third party: web archives, page caches,
+# "reader" proxies. A blocked site viewed through one of these never touches
+# its own address, so the ordinary blocklist never sees it.
+# (Google Translate and the AMP cache are NOT listed here: their hostnames
+# encode the real site, which the gateway decodes and checks instead.)
+web.archive.org
+wayback.archive.org
+archive.ph
+archive.today
+archive.is
+archive.li
+archive.vn
+archive.fo
+archive.md
+ghostarchive.org
+cachedview.nl
+cachedview.com
+timetravel.mementoweb.org
+12ft.io
+removepaywall.com
+smry.ai

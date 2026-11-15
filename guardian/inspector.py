@@ -114,6 +114,7 @@ class Inspector:
         self.dyn_blocked: set[str] = set()
         self.allow_ips: set[str] = set()          # destinations a parent marked "not a bypass"
         self.downloads = None                     # DownloadGuard (holds suspicious downloads)
+        self.adult = None                         # AdultGuard (name heuristics, proxy decoding)
         self.flows: dict[tuple, _Flow] = {}
         self.stats = collections.Counter()
         self._since_gc = 0
@@ -302,6 +303,12 @@ class Inspector:
                                f"{name}: a download from this site is waiting for your review",
                                alert=False, flow=fl)
         d = self.policy.decide(ctx, name)
+        if not d.block and self.adult is not None:
+            hit = self.adult.check_name(ctx, name)
+            if hit:
+                kind, reason, base = hit
+                return self._block(ctx, pkt, key, kind, f"{what} {name}: {reason}",
+                                   domain=registrable_domain(name), flow=fl, base=base)
         if d.block:
             kind = "bypass_domain" if d.category == "bypass" else "dns_bypass_site"
             return self._block(ctx, pkt, key, kind,

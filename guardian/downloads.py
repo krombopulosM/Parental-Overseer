@@ -39,6 +39,8 @@ class DownloadGuard:
         self.trusted = set(d.get("trusted_services") or [])
         self.inline = cfg.get("mode") == "gateway"
         self.kill_flow = kill_flow
+        self.adult = None                     # AdultGuard: unknown-video holds
+        self.video_min_bytes = int((cfg.get("adult") or {}).get("video_min_bytes", 2_000_000))
         self.held: dict[tuple, int] = {}
         self.approved: set[tuple] = set()
         self._lock = threading.Lock()
@@ -126,7 +128,11 @@ class DownloadGuard:
 
     # ------------------------------------------------------------ HTTPS downloads (from the flow monitor)
     def on_flow(self, rec, act, feat, group_cfg):
-        if getattr(rec, "dl_state", None) is not None or act is None or act.cls != "download":
+        if getattr(rec, "dl_state", None) is not None or act is None:
+            return None
+        if act.cls == "video":
+            return self._on_video(rec, act, feat, group_cfg)
+        if act.cls != "download":
             return None
         if rec.bytes_down < self.min_bytes or feat.rate_down < self.min_rate:
             return None
@@ -147,6 +153,50 @@ class DownloadGuard:
         rec.flagged = True
         rid = self._hold(rec.device_id, rec.client_ip, site, rec.domain, rec.dst_ip, rec.dst_port,
                          None, rec.bytes_down, feat.rate_down, score, reasons, policy)
+        if self.inline and self.kill_flow:
+            self.kill_flow(rec.proto, rec.client_ip, rec.tuple[2], rec.dst_ip, rec.dst_port)
+        return rid
+
+    # ------------------------------------------------------------ video from unknown sites
+    def _on_video(self, rec, act, feat, group_cfg):
+        """Adult and pirate streaming sites that no list knows still *look* like
+        video. In strict mode, video from a site that isn't a known video
+        service is cut and held for review."""
+        if self.adult is None or rec.bytes_down < self.video_min_bytes or rec.duration < 4:
+            return None
+        policy = self.adult.unknown_video_policy(group_cfg)
+        if policy == "off":
+            return None
+        from .activity import SERVICE_CATEGORY
+        svc = rec.service
+        if SERVICE_CATEGORY.get(svc) == "video" or svc in self.trusted or self.adult.is_known_video_site(rec.domain):
+            rec.dl_state = "known_video"
+            return None
+        site = self.site_key(rec.domain, rec.dst_ip)
+        if (rec.device_id, site) in self.approved:
+            rec.dl_state = "approved"
+            rec.flagged = True
+            return "allowed"
+        score, reasons, _ = self.score(rec.device_id, rec.domain, ip=rec.dst_ip)
+        reasons.insert(0, "+40: streaming video from a site that isn't a known video service")
+        score = min(99, score + 40)
+        if rec.domain:
+            hit = self.adult.keyword_hit(rec.domain)
+            if hit:
+                score = min(99, score + (40 if hit[0] == "strong" else 20))
+                reasons.append(f"+{40 if hit[0] == 'strong' else 20}: the site name contains '{hit[1]}'")
+        if policy == "alert":
+            rec.dl_state = "alerted"
+            self.alerts.emit("video_held", device_id=rec.device_id, client_ip=rec.client_ip, dst=rec.dst_ip,
+                             domain=site, base=score, action="noted (standard mode)",
+                             detail=f"Watching video from {site}, which isn't a known video service. "
+                                    + "; ".join(reasons))
+            return "alerted"
+        rec.dl_state = "held"
+        rec.flagged = True
+        rid = self._hold(rec.device_id, rec.client_ip, site, rec.domain, rec.dst_ip, rec.dst_port, None,
+                         rec.bytes_down, feat.rate_down, score, reasons,
+                         "block_suspicious" if policy == "block" else "review_all", kind="video")
         if self.inline and self.kill_flow:
             self.kill_flow(rec.proto, rec.client_ip, rec.tuple[2], rec.dst_ip, rec.dst_port)
         return rid
@@ -182,7 +232,7 @@ class DownloadGuard:
             "status": status, "note": note})
 
     def _hold(self, device_id, client_ip, site, domain, dst_ip, dst_port, filename, nbytes, rate, score,
-              reasons, policy):
+              reasons, policy, kind="download"):
         auto_deny = policy == "block_suspicious"
         status = "denied" if auto_deny else "pending"
         rid = None
@@ -190,7 +240,7 @@ class DownloadGuard:
             rid = self.db.add_download({
                 "device_id": device_id, "client_ip": client_ip, "site": site, "domain": domain,
                 "dst_ip": dst_ip, "dst_port": dst_port, "filename": filename, "bytes_seen": nbytes,
-                "rate": rate, "score": score, "reasons": json.dumps(reasons), "status": status,
+                "rate": rate, "score": score, "reasons": json.dumps(reasons), "status": status, "kind": kind,
                 "note": "monitor mode: not stopped" if not self.inline else policy})
         if self.inline:
             with self._lock:
@@ -202,9 +252,15 @@ class DownloadGuard:
             action = "blocked (policy: block suspicious)"
         else:
             action = "held for your review"
-        self.alerts.emit("download_held", device_id=device_id, client_ip=client_ip, dst=dst_ip,
-                         domain=site, base=score, action=action,
-                         detail=f"Downloading {what} from {site}. Suspicion {score}/100: " + "; ".join(reasons))
+        if kind == "video":
+            self.alerts.emit("video_held", device_id=device_id, client_ip=client_ip, dst=dst_ip,
+                             domain=site, base=score, action=action,
+                             detail=f"Watching video from {site}, which isn't a known video service. "
+                                    f"Suspicion {score}/100: " + "; ".join(reasons))
+        else:
+            self.alerts.emit("download_held", device_id=device_id, client_ip=client_ip, dst=dst_ip,
+                             domain=site, base=score, action=action,
+                             detail=f"Downloading {what} from {site}. Suspicion {score}/100: " + "; ".join(reasons))
         return rid
 
     def _settle_others(self, r, status):

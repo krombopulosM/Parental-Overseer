@@ -181,7 +181,7 @@ views.overview = {
   },
 };
 
-const CATS = ["vpn", "dns", "disguise", "torrent", "tamper", "download"];
+const CATS = ["vpn", "dns", "disguise", "torrent", "tamper", "download", "adult"];
 const ACTS = ["video", "gaming", "browsing", "download", "social", "music", "call", "other"];
 const fmtRate = v => fmtBytes(v) + "/s";
 function actBadge(cls, label) {
@@ -290,9 +290,47 @@ views.live = {
   },
 };
 
+views.guide = {
+  shell: () => `<div class="docs-layout"><nav class="docs-toc" aria-label="Guide contents">
+      <input type="search" id="gd-search" placeholder="Search the guide…" aria-label="Search the guide"><div id="gd-toc"></div></nav>
+    <article class="docs" id="gd-body"><div class="empty">Loading…</div></article></div>`,
+  async init() {
+    const html = await (await fetch("/static/docs.html", { credentials: "same-origin" })).text();
+    $("#gd-body").innerHTML = html;
+    const secs = $$("#gd-body section");
+    $("#gd-toc").innerHTML = secs.map(sc => `<a href="#guide/${sc.id}" data-sec="${sc.id}">${esc(sc.dataset.title)}</a>` +
+      $$("h3[id]", sc).map(h => `<a class="sub" href="#guide/${h.id}" data-sec="${h.id}">${esc(h.textContent)}</a>`).join("")).join("");
+    $("#gd-search").oninput = e => {
+      const q = e.target.value.trim().toLowerCase();
+      secs.forEach(sc => { sc.hidden = !!q && !sc.textContent.toLowerCase().includes(q); });
+      $$("#gd-toc a").forEach(a => { const t = document.getElementById(a.dataset.sec); a.hidden = !!(t && t.closest("section").hidden); });
+    };
+    try {
+      const s = await api("/api/setup-summary");
+      const on = v => v ? "on" : "off";
+      $("#your-setup").innerHTML = `<div class="setup-box"><h4>Your setup right now</h4>
+        Mode: <b>${s.mode === "gateway" ? "Gateway (full protection)" : "Monitor (testing on a PC - nothing enforced on other devices)"}</b>.
+        New devices go to <b>${esc((s.groups.find(g => g.is_default) || {}).name || "")}</b>.
+        Adult protection: <b>${esc(s.adult.mode)}</b>, SafeSearch <b>${on(s.adult.safesearch)}</b>, YouTube Restricted Mode <b>${esc(s.adult.youtube)}</b>,
+        family DNS <b>${(s.adult.family_dns || []).length ? esc(s.adult.family_dns.join(", ")) : "off"}</b>.
+        Downloads: <b>${esc(String(s.downloads.policy).replace("_", " "))}</b> (hold at ${s.downloads.threshold}+).
+        Network attacks pause a device for <b>${s.tamper.auto_pause_minutes || 0} min</b>.
+        If the inspector stops, children's web access <b>${s.fail_open ? "stays open (fail-open)" : "is cut (fail-closed)"}</b>.</div>`;
+      $("#your-groups").innerHTML = `<table><thead><tr><th>Group</th><th>Filtered</th><th>Blocked categories</th><th>UDP / games</th><th>Adult protection</th><th>Downloads</th></tr></thead><tbody>
+        ${s.groups.map(g => `<tr><td><b>${esc(g.name)}</b>${g.is_default ? ` <span class="badge info">new devices</span>` : ""}</td><td>${g.filtered ? "yes" : "no"}</td>
+        <td class="small">${esc(g.categories.join(", ") || "-")}</td><td>${g.udp ? "allowed" : "blocked"}</td><td>${esc(g.adult)}</td><td class="small">${esc(String(g.downloads).replace("_", " "))}</td></tr>`).join("")}</tbody></table>`;
+      const sizes = Object.entries(s.lists).filter(([k]) => ["adult", "bypass", "torrent", "mirrors", "unsafe_search", "piracy"].includes(k));
+      $("#your-adult").innerHTML = `<div class="setup-box"><h4>In your setup</h4>Adult protection is <b>${esc(s.adult.mode)}</b>; video from unknown sites: <b>${esc(s.adult.unknown_video)}</b>.
+        List sizes: ${sizes.map(([k, v]) => `${esc(k)} <b>${v.toLocaleString()}</b>`).join(" · ")}.</div>`;
+    } catch (_) { /* the summary is optional */ }
+    if (state.param) { const t = document.getElementById(state.param); if (t) t.scrollIntoView(); }
+  },
+  async refresh() { },
+};
+
 views.downloads = {
   shell: () => `
-    <div class="page-head"><div><h1>Downloads</h1><div class="muted" id="dl-sub"></div></div></div>
+    <div class="page-head"><div><h1>Reviews</h1><div class="muted" id="dl-sub"></div></div></div>
     <div class="page-head" style="margin:4px 0 10px"><h2>Waiting for your decision</h2></div>
     <div class="cards" id="dl-pending"></div>
     <div class="panel" style="margin-top:18px"><div class="panel-head"><h2>All downloads</h2></div><div class="scroll" id="dl-all"></div></div>`,
@@ -302,7 +340,8 @@ views.downloads = {
       `encrypted downloads can't be opened. ` + (d.inline ? "" : "Monitor mode: nothing is actually stopped.");
     $("#dl-pending").innerHTML = d.pending.length ? d.pending.map(x => `
       <div class="card dl-card">
-        <div class="card-head"><div style="min-width:0"><div class="site">${esc(x.filename || x.site)}</div>
+        <div class="card-head"><div style="min-width:0"><span class="badge ${x.kind === "video" ? "info" : ""}">${x.kind === "video" ? "Video" : "Download"}</span>
+          <div class="site" style="margin-top:6px">${esc(x.filename || x.site)}</div>
           <div class="small muted">${x.filename ? esc(x.site) + " · " : ""}${deviceLink(x.device_id, x.device)} · ${ago(x.ts)}</div></div>
           <span class="score-pill" title="Suspicion score">${x.score}/100</span></div>
         <div class="small" style="margin-top:8px">${x.bytes_seen ? `${fmtBytes(x.bytes_seen)} received before it was stopped` : "stopped before it started"}</div>
@@ -311,9 +350,9 @@ views.downloads = {
           <button class="danger" data-dl="${x.id}" data-do="deny" title="Keep this site blocked for this device">Deny</button></div>
       </div>`).join("") : `<div class="empty">Nothing waiting. 👍</div>`;
     const st = { pending: "warn", approved: "ok", allowed: "", denied: "bad" };
-    $("#dl-all").innerHTML = d.downloads.length ? `<table><thead><tr><th>When</th><th>Device</th><th>From</th><th>File</th>
+    $("#dl-all").innerHTML = d.downloads.length ? `<table><thead><tr><th>When</th><th>Type</th><th>Device</th><th>From</th><th>File</th>
       <th class="right">Seen</th><th class="right">Suspicion</th><th>Status</th></tr></thead><tbody>
-      ${d.downloads.map(x => `<tr><td class="small nowrap muted">${new Date(x.ts * 1000).toLocaleString()}</td>
+      ${d.downloads.map(x => `<tr><td class="small nowrap muted">${new Date(x.ts * 1000).toLocaleString()}</td><td class="small">${x.kind === "video" ? "Video" : "Download"}</td>
         <td class="nowrap">${deviceLink(x.device_id, x.device)}</td><td class="mono small">${esc(x.site)}</td>
         <td class="small">${esc(x.filename || "")}</td><td class="right nowrap">${x.bytes_seen ? fmtBytes(x.bytes_seen) : ""}</td>
         <td class="right" title="${esc(x.reasons.join("\n"))}">${x.score}</td>

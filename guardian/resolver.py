@@ -11,7 +11,7 @@ import collections
 import threading
 import time
 
-from dnslib import DNSRecord, QTYPE, RCODE
+from dnslib import CNAME, RR, DNSRecord, QTYPE, RCODE
 from dnslib.server import BaseResolver, DNSLogger, DNSServer
 
 from .services import is_ip_literal, registrable_domain
@@ -110,6 +110,7 @@ class GuardianResolver(BaseResolver):
         self.alerts, self.scheduler, self.stats, self.tunnel = alerts, scheduler, stats, tunnel
         self._seen_domains: set[str] = set()
         self.counters = collections.Counter()
+        self.adult = None                     # AdultGuard, wired by the app
 
     # ------------------------------------------------------------ helpers
     def _log(self, ctx, qname, qtype, action, reason):
@@ -122,8 +123,8 @@ class GuardianResolver(BaseResolver):
         r.header.rcode = rcode
         return r
 
-    def forward(self, request):
-        for up in self.upstreams:
+    def forward(self, request, upstreams=None):
+        for up in upstreams or self.upstreams:
             try:
                 data = request.send(up, self.up_port, tcp=False, timeout=3)
                 rec = DNSRecord.parse(data)
@@ -192,7 +193,27 @@ class GuardianResolver(BaseResolver):
                 self.alerts.emit("torrent_site", device_id=ctx.device_id, client_ip=ctx.ip,
                                  domain=registrable_domain(qname),
                                  detail=f"Looked up {qname} (torrent site, tracker or client)")
+            elif decision.category in ("adult", "mirrors", "unsafe_search") and ctx.filtered and self.alerts:
+                kind, what = {"adult": ("adult_site", "a known adult site"),
+                              "mirrors": ("content_mirror", "a web archive / page cache that can show "
+                                                            "blocked sites' content"),
+                              "unsafe_search": ("unsafe_search", "a search engine whose SafeSearch can't "
+                                                                 "be locked on")}[decision.category]
+                self.alerts.emit(kind, device_id=ctx.device_id, client_ip=ctx.ip,
+                                 domain=registrable_domain(qname), detail=f"Looked up {qname} - {what}")
             return self._reply(request, RCODE.NXDOMAIN)
+
+        adult = self.adult if ctx.filtered else None
+        if adult is not None:
+            hit = adult.check_name(ctx, qname)
+            if hit:
+                kind, reason, base = hit
+                self.counters["blocked"] += 1
+                self._log(ctx, qname, qtype, "blocked", reason)
+                if self.alerts:
+                    self.alerts.emit(kind, device_id=ctx.device_id, client_ip=ctx.ip, base=base,
+                                     domain=registrable_domain(qname), detail=f"{qname}: {reason}")
+                return self._reply(request, RCODE.NXDOMAIN)
 
         if qtype in ("HTTPS", "SVCB", "TYPE65", "TYPE64") and (
                 self.strip_https == "all" or (self.strip_https == "filtered" and ctx.filtered)):
@@ -201,7 +222,28 @@ class GuardianResolver(BaseResolver):
         if qtype == "AAAA" and self.strip_aaaa:
             return self._reply(request)
 
-        reply = self.forward(request)
+        family = adult.family_dns if adult is not None and adult.use_family_dns(ctx) else None
+        target = adult.safesearch_target(qname, ctx) if adult is not None else None
+        note = decision.reason
+        if target and qtype in ("A", "AAAA"):
+            # SafeSearch / Restricted Mode: answer with the engine's locked "safe" address
+            sub = self.forward(DNSRecord.question(target, qtype))
+            if sub is None:
+                self._log(ctx, qname, qtype, "error", "upstream unreachable")
+                return self._reply(request, RCODE.SERVFAIL)
+            reply = request.reply()
+            reply.add_answer(RR(request.q.qname, QTYPE.CNAME, rdata=CNAME(target + "."), ttl=300))
+            for rr in sub.rr:
+                reply.add_answer(rr)
+            note = f"SafeSearch enforced ({target})"
+            family = None
+        else:
+            reply = self.forward(request, family) if family else None
+            if reply is None:
+                if family:
+                    self.counters["family_dns_unreachable"] += 1
+                    family = None
+                reply = self.forward(request)
         if reply is None:
             self._log(ctx, qname, qtype, "error", "upstream unreachable")
             return self._reply(request, RCODE.SERVFAIL)
@@ -218,12 +260,35 @@ class GuardianResolver(BaseResolver):
             if d2.block:
                 self._log(ctx, qname, qtype, "blocked", f"alias {alias} -> {d2.reason}")
                 return self._reply(request, RCODE.NXDOMAIN)
+        if family and adult.family_flagged([ip for ip, _ in ips]):
+            self.counters["blocked"] += 1
+            reason = "flagged by the family DNS filter (adult or malware)"
+            self._log(ctx, qname, qtype, "blocked", reason)
+            if self.alerts:
+                self.alerts.emit("adult_family_dns", device_id=ctx.device_id, client_ip=ctx.ip,
+                                 domain=registrable_domain(qname),
+                                 detail=f"{qname} isn't on our lists, but the family DNS filter classifies it "
+                                        f"as adult or malicious")
+            return self._reply(request, RCODE.NXDOMAIN)
+        if adult is not None and family and qtype == "A":
+            origin = adult.decode_proxy(qname)          # translator/AMP proxy: ask about the real site too
+            if origin:
+                o = self.forward(DNSRecord.question(origin, "A"), family)
+                oips = [str(rr.rdata) for rr in (o.rr if o else []) if QTYPE[rr.rtype] == "A"]
+                if adult.family_flagged(oips):
+                    self._log(ctx, qname, qtype, "blocked", f"proxied site {origin} flagged by family DNS")
+                    if self.alerts:
+                        self.alerts.emit("adult_proxy", device_id=ctx.device_id, client_ip=ctx.ip, base=90,
+                                         domain=registrable_domain(origin),
+                                         detail=f"Tried to open {origin} through a translator/cache proxy - "
+                                                f"the family DNS filter classifies it as adult")
+                    return self._reply(request, RCODE.NXDOMAIN)
         if self.strip_aaaa and ips:
             reply.rr = [rr for rr in reply.rr if QTYPE[rr.rtype] != "AAAA"]
         if ips:
             self.dnscache.record(client_ip, names, ips)
 
-        self._log(ctx, qname, qtype, "allowed", decision.reason)
+        self._log(ctx, qname, qtype, "allowed", note)
         base = registrable_domain(qname)
         if base and base not in self._seen_domains and not is_ip_literal(base):
             self._seen_domains.add(base)
