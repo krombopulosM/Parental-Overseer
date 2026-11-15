@@ -44,6 +44,7 @@ class NftGateway:
         self.ipv6 = bool(gw.get("ipv6"))
         self.web_port = int(cfg["web"]["port"])
         self.dns_port = int(cfg["dns"]["listen_port"])
+        self.redirect_port = int(cfg["dns"].get("redirect_port") or self.dns_port)
         self.allow_wan_ssh = bool(gw.get("allow_wan_ssh", True))
         self.fail_open = bool(enf.get("fail_open", False))
         self.inspect_pkts = int(enf.get("inspect_packets", 10))
@@ -58,6 +59,8 @@ class NftGateway:
     def _queue_stmt(self) -> str:
         if self.backend == "nft":
             return "queue num 0" + (" bypass" if self.fail_open else "")
+        # iptables picks these up in FORWARD and INPUT (the input chain has its own
+        # priority, so "accept" here only hands the packet on to iptables)
         return f"meta mark set {M_INSPECT:#x} accept"       # iptables NFQUEUE picks it up
 
     def detect_backend(self) -> str:
@@ -105,7 +108,7 @@ table inet {TABLE} {{
 
     chain dns_redirect {{
         type nat hook prerouting priority dstnat; policy accept;
-        iifname {lan} meta l4proto {{ tcp, udp }} th dport 53 ip daddr != {self.lan_ip} dnat ip to {self.lan_ip}:{self.dns_port}
+        iifname {lan} meta l4proto {{ tcp, udp }} th dport 53 ip daddr != {self.lan_ip} dnat ip to {self.lan_ip}:{self.redirect_port}
         iifname {lan} meta l4proto {{ tcp, udp }} th dport 53 ip daddr {self.lan_ip} th dport != {self.dns_port} dnat ip to {self.lan_ip}:{self.dns_port}
     }}
 
@@ -115,16 +118,17 @@ table inet {TABLE} {{
     }}
 
     chain input {{
-        type filter hook input priority filter; policy drop;
+        type filter hook input priority {prio}; policy drop;
         iif "lo" accept
         ct state established,related accept
         ct state invalid drop
         meta l4proto {{ icmp, ipv6-icmp }} limit rate 20/second accept
-        iifname {lan} meta l4proto {{ tcp, udp }} th dport {{ 53, {self.dns_port} }} accept
+        iifname {lan} meta l4proto {{ tcp, udp }} th dport {{ 53, {self.dns_port}, {self.redirect_port} }} accept
         iifname {lan} udp dport 67 accept
         iifname {lan} tcp dport {{ 22, {self.web_port} }} jump admin_access
         iifname "{self.wan}" udp sport 67 udp dport 68 accept
-{wan_ssh}    }}
+{wan_ssh}        iifname {lan} meta mark {M_FILTERED:#x} meta l4proto {{ tcp, udp }} ct original packets <= 1 {q}
+    }}
 
     chain admin_access {{
     }}
@@ -183,14 +187,16 @@ table inet {TABLE} {{
         ]
 
     def _install_xt(self):
-        for rule in self._xt_rules():
-            if system.run(["iptables", "-C", "FORWARD", *rule], check=False).returncode != 0:
-                system.run(["iptables", "-I", "FORWARD", "1", *rule])
+        for chain in ("FORWARD", "INPUT"):
+            for rule in self._xt_rules():
+                if system.run(["iptables", "-C", chain, *rule], check=False).returncode != 0:
+                    system.run(["iptables", "-I", chain, "1", *rule])
 
     def _remove_xt(self):
-        for rule in self._xt_rules():
-            while system.run(["iptables", "-D", "FORWARD", *rule], check=False).returncode == 0:
-                pass
+        for chain in ("FORWARD", "INPUT"):
+            for rule in self._xt_rules():
+                while system.run(["iptables", "-D", chain, *rule], check=False).returncode == 0:
+                    pass
 
     # ------------------------------------------------------------ lifecycle
     def setup(self):

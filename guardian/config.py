@@ -20,6 +20,7 @@ DEFAULTS: dict = {
         "upstream_port": 53,
         "strip_https_records": "filtered",
         "block_qtypes_filtered": ["NULL", "ANY"],
+        "redirect_port": 5354,
         "tunnel_detection": {"enabled": True, "window": 300, "unique_names": 120,
                              "min_label_len": 24, "block_hours": 24},
     },
@@ -41,6 +42,15 @@ DEFAULTS: dict = {
         "fail_open": False,
         "queue_backend": "auto",
         "inspect_packets": 10,
+        "protocol_exempt_domains": ["whatsapp.net", "whatsapp.com"],
+    },
+    "torrent": {"fanout_peers": 25, "window": 60},
+    "tamper": {
+        "enabled": True, "auto_quarantine_confidence": 80, "carry_over_identity": True,
+        "auto_pause_minutes": 30, "auto_pause_confidence": 85,
+        "auto_pause_kinds": ["arp_spoof", "ip_spoof", "rogue_dhcp", "rogue_ra", "port_scan"],
+        "port_scan_ports": 8, "hidden_router_min": 5, "offline_alert_minutes": 5,
+        "repin_minutes": 10,
     },
     "detector": {
         "enabled": True, "interval": 30, "min_duration": 300, "min_bytes": 10_000_000,

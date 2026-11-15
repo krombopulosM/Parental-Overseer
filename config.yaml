@@ -15,6 +15,7 @@ dns:
   # keys - this keeps the real site name visible in every TLS handshake.
   strip_https_records: "filtered"        # filtered | all | off
   block_qtypes_filtered: ["NULL", "ANY"] # record types only DNS-tunnel tools use
+  redirect_port: 5354            # gateway mode: DNS aimed at other servers lands here (flags "custom DNS")
   tunnel_detection:
     enabled: true
     window: 300            # seconds
@@ -39,19 +40,19 @@ groups:
     categories: [ads]
   kids:
     filtered: true
-    categories: [ads, adult, gambling, bypass]
+    categories: [ads, adult, gambling, bypass, torrent]
     allow_udp: false          # web only: blocks WireGuard, OpenVPN-UDP, IPsec, QUIC, Shadowsocks-UDP...
     require_sni: true         # encrypted connections must name the site they're going to
     dns_consistency: "enforce"  # only connect to IPs the gateway's DNS handed out (enforce | log | off)
   consoles:                   # games need UDP; VPN signatures + IP lists still apply
     filtered: true
-    categories: [ads, adult, gambling, bypass]
+    categories: [ads, adult, gambling, bypass, torrent]
     allow_udp: true
     require_sni: true
     dns_consistency: "log"
   quarantine:
     filtered: true
-    categories: [ads, adult, gambling, bypass]
+    categories: [ads, adult, gambling, bypass, torrent]
     allow_udp: false
     require_sni: true
     dns_consistency: "enforce"
@@ -67,6 +68,8 @@ categories:
     urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt]
   gambling:
     urls: [https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts]
+  torrent:                    # torrent sites, trackers, DHT bootstrap nodes, clients
+    files: [blocklists/builtin/torrent.txt]
   bypass:                     # VPNs, proxies, encrypted-DNS resolvers, Tor, private relays
     files: [blocklists/builtin/vpn.txt, blocklists/builtin/doh.txt, blocklists/builtin/bypass.txt]
     urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt]
@@ -98,6 +101,32 @@ enforcement:
   fail_open: false             # false = if the inspector stops, filtered devices lose web access (safer)
   queue_backend: auto          # auto | nft | xt
   inspect_packets: 10          # first N packets of each web connection are inspected
+  # Apps known to use their own (non-TLS) protocol on port 443. Only applies when
+  # the destination was looked up under one of these domains.
+  protocol_exempt_domains: [whatsapp.net, whatsapp.com]
+
+# ---------------------------------------------------------------- torrents
+torrent:
+  fanout_peers: 25             # distinct peers on random ports within `window` = torrent/P2P client
+  window: 60
+
+# ---------------------------------------------------------------- countermeasure defences
+tamper:
+  enabled: true
+  # A device using an adult device's hardware address but a different "DHCP
+  # fingerprint" is treated as filtered until you click "It's me".
+  auto_quarantine_confidence: 80
+  # A new MAC that matches a known filtered device keeps that device's group
+  # (stops "change MAC to escape the kids group"). Never grants adult access.
+  carry_over_identity: true
+  # Devices attacking the network itself are paused automatically (0 = off).
+  auto_pause_minutes: 30
+  auto_pause_confidence: 85
+  auto_pause_kinds: [arp_spoof, ip_spoof, rogue_dhcp, rogue_ra, port_scan]
+  port_scan_ports: 8           # distinct gateway ports probed in a minute
+  hidden_router_min: 5         # connections showing an extra router hop
+  offline_alert_minutes: 5     # report gaps in the gateway's heartbeat
+  repin_minutes: 10            # how long a spoofed address stays pinned to its real owner
 
 # ---------------------------------------------------------------- VPN-behaviour detector
 detector:

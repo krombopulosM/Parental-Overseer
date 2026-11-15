@@ -35,3 +35,20 @@ def kill_flows(src: str | None = None, dst: str | None = None):
         args += ["-d", dst]
     if src or dst:
         run(args, check=False)
+
+
+def pin_neighbor(ip: str, mac: str, dev: str):
+    """Stop ARP spoofing from poisoning the gateway: fix ip -> mac for a while."""
+    run(["ip", "neigh", "replace", ip, "lladdr", mac, "dev", dev, "nud", "permanent"], check=False)
+
+
+def unpin_neighbor(ip: str, dev: str):
+    run(["ip", "neigh", "del", ip, "dev", dev], check=False)
+
+
+def iface_mac(dev: str) -> str | None:
+    try:
+        with open(f"/sys/class/net/{dev}/address") as fh:
+            return fh.read().strip().lower()
+    except OSError:
+        return None

@@ -86,19 +86,35 @@ function bars(rows, valueKey, fmt, extra) {
       <div class="small muted nowrap">${fmt(r[valueKey])}${extra ? " · " + extra(r) : ""}</div>
     </div>`).join("")}</div>`;
 }
+function confBadge(a) {
+  if (a.confidence == null) return "";
+  const c = a.confidence, cls = c >= 80 ? "hi" : c >= 50 ? "mid" : "";
+  const fp = c >= 80 ? "low" : c >= 50 ? "medium" : "high";
+  const tip = [`${c}% likely to be a deliberate bypass attempt (false-positive risk: ${fp})`, "",
+    ...(a.confidence_why || []), "", a.fp_note ? `Could be innocent if: ${a.fp_note}` : ""].join("\n");
+  return `<span class="conf ${cls}" title="${esc(tip)}"><span class="bar"><i style="width:${c}%"></i></span>${c}% deliberate</span>`;
+}
+const REVIEW_HELP = {
+  allow_ip: "Not a bypass: stop blocking this destination for this check, and trust similar alerts less",
+  identity: "It's me: trust this device again and accept its new fingerprint",
+  none: "Not a bypass: trust similar alerts less in future (use Rules to unblock a site)",
+};
 function alertList(alerts, withActions) {
   if (!alerts.length) return `<div class="empty">No bypass attempts. 👍</div>`;
   return alerts.map(a => `
     <div class="alert-item ${a.acknowledged ? "acked" : ""}">
       <div class="sev ${esc(a.severity)}"></div>
       <div class="body">
-        <div class="title">${esc(a.title)} ${a.count > 1 ? `<span class="badge">×${a.count}</span>` : ""}</div>
+        <div class="title">${esc(a.title)} ${a.count > 1 ? `<span class="badge">×${a.count}</span>` : ""} ${confBadge(a)}</div>
         <div class="detail">${esc(a.detail)}</div>
-        <div class="meta">${a.device_id ? deviceLink(a.device_id, a.device) : esc(a.client_ip || "")} · ${esc(a.action || "")} · ${ago(a.last_ts)}</div>
+        <div class="meta">${a.device_id ? deviceLink(a.device_id, a.device) : esc(a.device || "")} · ${esc(a.action || "")} · ${ago(a.last_ts)}
+          ${a.category_label && a.category !== "info" ? ` · ${esc(a.category_label)}` : ""}
+          ${a.review ? ` · <span class="reviewed">${a.review === "fp" ? "you marked: not a bypass" : "you confirmed it"}</span>` : ""}</div>
       </div>
       ${withActions && !a.acknowledged ? `<div class="row" style="align-items:flex-start">
+        ${a.confidence != null ? `<button class="small" data-review="${a.id}" data-verdict="tp" title="Yes, this was a real attempt: trust similar alerts more">Confirmed</button>
+        <button class="small" data-review="${a.id}" data-verdict="fp" title="${esc(REVIEW_HELP[a.fp_action] || REVIEW_HELP.none)}">${a.fp_action === "identity" ? "It's me" : "Not a bypass"}</button>` : ""}
         <button class="small" data-ack="${a.id}">Dismiss</button>
-        ${a.dst || a.domain ? `<button class="small" data-allow="${a.id}" title="Exempt this destination and lift any automatic block">This is fine</button>` : ""}
       </div>` : ""}
     </div>`).join("");
 }
@@ -165,6 +181,146 @@ views.overview = {
   },
 };
 
+const CATS = ["vpn", "dns", "disguise", "torrent", "tamper"];
+const STATUS = {
+  tampering: ["critical", "!", "Tampering"], persistent: ["serious", "!", "Persistent"],
+  curious: ["warning", "?", "Curious"], clean: ["good", "✓", "Clean"],
+};
+function statusBadge(s) {
+  const [lvl, icon, label] = STATUS[s] || STATUS.clean;
+  return `<span class="status"><span class="ic" style="background:var(--st-${lvl});${lvl === "warning" ? "color:#222" : ""}">${icon}</span>${label}</span>`;
+}
+function niceMax(v) {
+  if (v <= 4) return 4;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+function stackedBars(el, h, catLabels) {
+  // h.hourly: {cat: [24 counts]}, oldest first; one stacked bar per hour
+  const n = 24, W = Math.max(320, el.clientWidth - 32), H = 210, L = 34, B = 22, T = 8;
+  const totals = [...Array(n).keys()].map(i => CATS.reduce((s, c) => s + h.hourly[c][i], 0));
+  const max = niceMax(Math.max(...totals, 1));
+  const pw = W - L - 6, ph = H - T - B, slot = pw / n, bw = Math.max(4, Math.min(22, slot - 4));
+  const y = v => T + ph - (v / max) * ph;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Bypass attempts per hour, last 24 hours">`;
+  for (const t of [0, max / 2, max]) {
+    svg += `<line class="grid" x1="${L}" x2="${W - 6}" y1="${y(t)}" y2="${y(t)}"/>`;
+    svg += `<text class="axis" x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${t}</text>`;
+  }
+  for (let i = 0; i < n; i++) {
+    const x = L + i * slot + (slot - bw) / 2;
+    let base = 0;
+    const segs = CATS.filter(c => h.hourly[c][i] > 0);
+    segs.forEach((c, k) => {
+      const v = h.hourly[c][i], y0 = y(base), y1 = y(base + v);
+      const gap = k > 0 ? 2 : 0, top = k === segs.length - 1;
+      const hh = Math.max(1, y0 - y1 - gap), yy = y1;
+      if (top && hh > 4) {
+        const r = Math.min(4, bw / 2);
+        svg += `<path fill="var(--cat-${c})" d="M${x},${yy + hh} V${yy + r} Q${x},${yy} ${x + r},${yy} H${x + bw - r} Q${x + bw},${yy} ${x + bw},${yy + r} V${yy + hh} Z"/>`;
+      } else {
+        svg += `<rect fill="var(--cat-${c})" x="${x}" y="${yy}" width="${bw}" height="${hh}"/>`;
+      }
+      base += v;
+    });
+    if (i % 4 === 3 || i === n - 1) {
+      const d = new Date((h.hourly_start + (i + 1) * 3600) * 1000);
+      svg += `<text class="axis" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${String(d.getHours()).padStart(2, "0")}:00</text>`;
+    }
+    svg += `<rect data-i="${i}" x="${L + i * slot}" y="${T}" width="${slot}" height="${ph}" fill="transparent"/>`;
+  }
+  svg += `</svg><div class="tip" hidden></div>`;
+  el.innerHTML = svg;
+  const tip = $(".tip", el);
+  el.onmousemove = e => {
+    const r = e.target.closest("rect[data-i]");
+    if (!r) { tip.hidden = true; return; }
+    const i = Number(r.dataset.i), s = new Date((h.hourly_start + i * 3600) * 1000);
+    const hh = d => String(d.getHours()).padStart(2, "0") + ":00";
+    tip.innerHTML = `<div class="muted" style="margin-bottom:4px">${hh(s)}–${hh(new Date(s.getTime() + 3600e3))}</div>` +
+      CATS.filter(c => h.hourly[c][i]).map(c => `<div class="row"><span><span class="sw" style="background:var(--cat-${c})"></span>${esc(catLabels[c])}</span><b>${h.hourly[c][i]}</b></div>`).join("") +
+      `<div class="row" style="margin-top:4px"><span class="muted">Total</span><b>${totals[i]}</b></div>`;
+    tip.hidden = false;
+    const box = el.getBoundingClientRect();
+    tip.style.left = Math.min(box.width - 170, e.clientX - box.left + 12) + "px";
+    tip.style.top = Math.max(0, e.clientY - box.top - 20) + "px";
+  };
+  el.onmouseleave = () => { tip.hidden = true; };
+}
+function spark(daily, title) {
+  const max = Math.max(...daily, 1);
+  return `<div class="spark" title="${esc(title)}">${daily.map((v, i) =>
+    `<span class="${v ? "" : "zero"}" style="height:${v ? Math.max(8, 100 * v / max) : 6}%" title="${daily.length - 1 - i === 0 ? "today" : (daily.length - 1 - i) + "d ago"}: ${v}"></span>`).join("")}</div>`;
+}
+
+views.health = {
+  shell: () => `
+    <div class="page-head"><div><h1>Health</h1><div class="muted">Is the protection working, and who has been trying to get around it?</div></div>
+      <div class="actions"><select id="hl-days" aria-label="Period"><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option></select></div></div>
+    <div class="health-top">
+      <div class="score" id="hl-score"></div>
+      <div class="panel" style="margin:0"><div class="panel-head"><h2>Protection checks</h2></div><div class="checks" id="hl-checks"></div></div>
+    </div>
+    <div class="tiles" id="hl-tiles"></div>
+    <div class="panel"><div class="panel-head"><h2>Bypass attempts, last 24 hours</h2>
+      <div class="tools"><div class="legend" id="hl-legend"></div><button class="small" id="hl-table-btn">Table</button></div></div>
+      <div class="chart-wrap" id="hl-chart"></div><div class="scroll" id="hl-table" hidden></div></div>
+    <div class="page-head" style="margin:22px 0 12px"><div><h2>Devices</h2></div></div>
+    <div class="cards" id="hl-cards"></div>
+    <div class="panel" style="margin-top:16px"><div class="panel-head"><h2>Your reviews</h2></div><div class="panel-body" id="hl-reviews"></div></div>`,
+  init() {
+    $("#hl-days").onchange = refresh;
+    $("#hl-table-btn").onclick = () => {
+      const t = $("#hl-table"), c = $("#hl-chart");
+      t.hidden = !t.hidden; c.hidden = !t.hidden; $("#hl-table-btn").textContent = t.hidden ? "Table" : "Chart";
+      if (!c.hidden && views.health.last) stackedBars(c, views.health.last, views.health.last.categories);
+    };
+  },
+  async refresh() {
+    const h = await api(`/api/health?days=${$("#hl-days").value}`);
+    views.health.last = h;
+    const lv = h.overall === "Healthy" ? "good" : h.overall === "At risk" ? "critical" : "warning";
+    $("#hl-score").innerHTML = `<div class="n">${h.score}</div><div><span class="status"><span class="ic" style="background:var(--st-${lv});${lv === "warning" ? "color:#222" : ""}">${lv === "good" ? "✓" : "!"}</span>${esc(h.overall)}</span></div>
+      <div class="l small" style="margin-top:8px">${h.checks.filter(c => c.level !== "ok").length} of ${h.checks.length} checks need attention</div>`;
+    $("#hl-checks").innerHTML = h.checks.map(c => `<div class="check"><span class="ic ${c.level}">${c.level === "ok" ? "✓" : "!"}</span>
+      <div><div class="t">${esc(c.name)}</div><div class="d">${esc(c.detail)}</div></div></div>`).join("");
+    $("#hl-tiles").innerHTML = CATS.map(c => `<div class="tile"><div class="n">${h.totals[c].toLocaleString()}</div>
+      <div class="l"><span class="sw" style="background:var(--cat-${c})"></span>${esc(h.categories[c])} · ${h.days}d</div></div>`).join("");
+    $("#hl-legend").innerHTML = CATS.map(c => `<span><span class="sw" style="background:var(--cat-${c})"></span>${esc(h.categories[c])}</span>`).join("");
+    if (!$("#hl-chart").hidden) stackedBars($("#hl-chart"), h, h.categories);
+    $("#hl-table").innerHTML = `<table><thead><tr><th>Hour</th>${CATS.map(c => `<th class="right">${esc(h.categories[c])}</th>`).join("")}<th class="right">Total</th></tr></thead><tbody>
+      ${[...Array(24).keys()].reverse().filter(i => CATS.some(c => h.hourly[c][i])).map(i => {
+        const d = new Date((h.hourly_start + i * 3600) * 1000);
+        return `<tr><td class="nowrap">${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>${CATS.map(c => `<td class="right">${h.hourly[c][i]}</td>`).join("")}
+          <td class="right"><b>${CATS.reduce((s, c) => s + h.hourly[c][i], 0)}</b></td></tr>`; }).join("") || `<tr><td colspan="7" class="empty">No attempts in the last 24 hours.</td></tr>`}
+      </tbody></table>`;
+    $("#hl-cards").innerHTML = h.devices.length ? h.devices.map(d => `
+      <div class="card">
+        <div class="card-head"><div style="min-width:0"><div class="name">${d.device_id === "gateway" ? esc(d.label) : deviceLink(d.device_id, d.label)}</div>
+          <div class="small muted">${esc(d.group || "")}${d.online ? " · online" : ""}${d.paused ? " · paused" : ""}${d.suspect ? " · identity check" : ""}</div></div>
+          ${statusBadge(d.status)}</div>
+        <div class="stat-row">
+          <div><div class="n">${d.attempts_today}</div><div class="l">attempts today</div></div>
+          <div><div class="n">${d.attempts}</div><div class="l">attempts · ${h.days}d</div></div>
+          <div><div class="n">${d.techniques}</div><div class="l">techniques</div></div>
+          <div><div class="n">${d.blocked_total}</div><div class="l">sites blocked</div></div>
+        </div>
+        ${spark(d.daily, `Bypass attempts per day, last ${h.days} days`)}
+        <div class="chips">${CATS.filter(c => d.by_category[c]).map(c => `<span class="chip"><span class="sw" style="background:var(--cat-${c})"></span>${esc(h.categories[c])} <b>${d.by_category[c]}</b></span>`).join("")}
+          ${d.max_confidence ? `<span class="chip">most certain: <b>${d.max_confidence}%</b></span>` : ""}
+          ${d.last_attempt ? `<span class="chip">last try ${ago(d.last_attempt)}</span>` : ""}</div>
+        ${(d.top_blocked || []).length ? `<div class="small muted" style="margin-top:10px">Most-blocked: ${d.top_blocked.map(t => `<span class="mono">${esc(t.qname)}</span> ×${t.n}`).join(", ")}</div>` : ""}
+      </div>`).join("") : `<div class="empty">No filtered devices yet.</div>`;
+    const r = h.reviews;
+    $("#hl-reviews").innerHTML = r.reviewed ? `<div style="margin-bottom:10px">You reviewed <b>${r.reviewed}</b> alerts; <b>${r.fp}</b> were not real bypass attempts.
+      Each review recalibrates the confidence of similar alerts.</div>
+      <table><thead><tr><th>Alert type</th><th class="right">Reviewed</th><th class="right">Not a bypass</th></tr></thead><tbody>
+      ${r.by_kind.map(k => `<tr><td>${esc(k.title)}</td><td class="right">${k.reviewed}</td><td class="right">${k.fp}</td></tr>`).join("")}</tbody></table>`
+      : `<span class="muted">No reviews yet. Use <b>Confirmed</b> / <b>Not a bypass</b> on alerts to teach the confidence scores about your household.</span>`;
+  },
+};
+
 views.devices = {
   shell: () => `
     <div class="page-head"><div><h1>Devices</h1><div class="muted">New devices land in <b>${esc(state.defaultGroup)}</b> until you assign them. Only devices in an unfiltered group (e.g. adults) bypass the filter.</div></div></div>
@@ -177,6 +333,7 @@ views.devices = {
       ${devices.map(x => `<tr>
         <td><span class="status-dot ${x.online ? "on" : ""}"></span>${deviceLink(x.device_id, x.label)}
           ${x.paused ? `<span class="badge warn" title="${esc(x.paused_reason)}">paused</span>` : ""}
+          ${x.suspect ? `<span class="badge bad" title="Its identity looks copied - filtered until you confirm">identity check</span>` : ""}
           ${!x.group_set ? `<span class="badge info" title="Not assigned yet - using the default group">new</span>` : ""}</td>
         <td>${groupSelect(x)}</td>
         <td class="mono small">${esc(x.ip || "")}<div class="faint">${esc(x.mac || "")}</div></td>
@@ -221,7 +378,8 @@ views.device = {
       $("#dv-actions").innerHTML = `${groupSelect(x)}
         <button data-pause="${esc(x.device_id)}" data-min="15">Pause 15m</button>
         <button data-pause="${esc(x.device_id)}" data-min="60">Pause 1h</button>
-        <button data-pause="${esc(x.device_id)}" data-min="0">Resume</button>`;
+        <button data-pause="${esc(x.device_id)}" data-min="0">Resume</button>
+        ${x.suspect ? `<button class="primary" data-trust="${esc(x.device_id)}" title="Its hardware address was used by a device that identified itself differently. Click if that was you.">It's me</button>` : ""}`;
     }
     $("#dv-tiles").innerHTML = [
       [fmtMins(x.minutes_today), "Online today (approx.)"],
@@ -433,7 +591,11 @@ document.addEventListener("click", e => {
     const m = Number(b.dataset.min);
     act(() => post(`/api/devices/${encodeURIComponent(b.dataset.pause)}/pause`, { minutes: m }), m ? `Paused for ${fmtMins(m)}` : "Resumed");
   } else if (b.dataset.ack) act(() => post(`/api/alerts/${b.dataset.ack}/ack`), "Dismissed");
-  else if (b.dataset.allow) act(() => post(`/api/alerts/${b.dataset.allow}/allow`), "Marked as fine");
+  else if (b.dataset.review) act(async () => {
+    const r = await post(`/api/alerts/${b.dataset.review}/review`, { verdict: b.dataset.verdict });
+    toast(b.dataset.verdict === "tp" ? "Confirmed - similar alerts will score higher" : `Noted: ${r.note}`, 3500);
+  });
+  else if (b.dataset.trust) act(() => post(`/api/devices/${encodeURIComponent(b.dataset.trust)}/trust`), "Trusted again");
   else if (b.dataset.del) act(() => del(b.dataset.del), "Removed");
 });
 document.addEventListener("focusout", e => {

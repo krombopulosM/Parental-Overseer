@@ -14,8 +14,9 @@ SESSION_HOURS = 12
 
 
 class Auth:
-    def __init__(self, db):
+    def __init__(self, db, on_fail=None):
         self.db = db
+        self.on_fail = on_fail          # callable(ip, recent_failures)
         self._sessions: dict[str, float] = {}
         self._fails: dict[str, list] = {}
         self._lock = threading.Lock()
@@ -56,6 +57,9 @@ class Auth:
         if not self.verify(password):
             with self._lock:
                 self._fails.setdefault(ip, []).append(time.time())
+                n = len([t for t in self._fails[ip] if time.time() - t < 300])
+            if self.on_fail:
+                self.on_fail(ip, n)
             return None
         token = secrets.token_urlsafe(32)
         with self._lock:

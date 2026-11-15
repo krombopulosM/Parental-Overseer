@@ -10,8 +10,11 @@ import time
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
+import json
+
 from .alerts import KINDS
 from .auth import Auth
+from .confidence import CATEGORIES, KIND_META
 from .services import registrable_domain, service_label
 
 COOKIE = "pg_session"
@@ -28,7 +31,15 @@ def _midnight() -> float:
 def create_app(g) -> FastAPI:
     """g is the Guardian orchestrator."""
     app = FastAPI(title="Parental Gateway", docs_url=None, redoc_url=None, openapi_url=None)
-    auth = Auth(g.db)
+    def on_login_fail(ip, n):
+        if n >= 3:
+            ctx = g.policy.context(ip)
+            g.alerts.emit("dashboard_bruteforce", device_id=ctx.device_id, client_ip=ip,
+                          detail=f"{n} wrong dashboard passwords in 5 minutes from {ip}. Logins from it "
+                                 f"are locked for 5 minutes after the 5th.",
+                          action="locked out" if n >= 5 else "detected")
+
+    auth = Auth(g.db, on_fail=on_login_fail)
     static = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
     active_bytes = int(g.cfg["flows"].get("active_minute_bytes", 10000))
     app.state.auth = auth
@@ -137,7 +148,7 @@ def create_app(g) -> FastAPI:
                 "group": grp, "group_set": d["group_name"] is not None,
                 "filtered": g.cfg["groups"][grp]["filtered"],
                 "online": (d["last_seen"] or 0) > now - 300, "last_seen": d["last_seen"],
-                "paused": paused, "paused_reason": why,
+                "paused": paused, "paused_reason": why, "suspect": bool(d.get("suspect")),
                 "minutes_today": (online.get(did) or {}).get("minutes", 0),
                 "bytes_up": (data.get(did) or {}).get("bytes_up") or 0,
                 "bytes_down": (data.get(did) or {}).get("bytes_down") or 0,
@@ -166,8 +177,15 @@ def create_app(g) -> FastAPI:
                  "bytes_up": r["bytes_up"] or 0, "bytes_down": r["bytes_down"] or 0} for r in rows]
 
     def alert_view(a, names):
-        return {**a, "title": KINDS.get(a["kind"], (a["kind"],))[0],
-                "device": names.get(a["device_id"], a["client_ip"])}
+        meta = KIND_META.get(a["kind"], ("vpn", None, "none", ""))
+        try:
+            why = json.loads(a.get("confidence_why") or "[]")
+        except ValueError:
+            why = []
+        return {**a, "title": KINDS.get(a["kind"], (a["kind"],))[0], "confidence_why": why,
+                "category": a.get("category") or meta[0], "category_label": CATEGORIES.get(meta[0], ""),
+                "fp_action": meta[2], "fp_note": meta[3],
+                "device": names.get(a["device_id"], a["client_ip"] or "the gateway")}
 
     # ------------------------------------------------------------ dashboard data
     @app.get("/api/overview")
@@ -276,6 +294,57 @@ def create_app(g) -> FastAPI:
         g.db.ack_alert(alert_id)
         return {"ok": True}
 
+    @app.post("/api/alerts/{alert_id}/review")
+    async def review_alert(alert_id: int, req: Request):
+        """'Not a bypass' (fp) or 'Confirmed' (tp). Reviews calibrate future
+        confidence scores; 'Not a bypass' also undoes the block where that makes sense."""
+        body = await req.json()
+        verdict = body.get("verdict")
+        if verdict not in ("fp", "tp"):
+            raise HTTPException(400, "verdict must be fp or tp")
+        a = g.db.get_alert(alert_id)
+        if not a:
+            raise HTTPException(404)
+        note = ""
+        if verdict == "fp":
+            action = KIND_META.get(a["kind"], (None, None, "none"))[2]
+            if action == "allow_ip" and a["dst"]:
+                g.db.add_allow("ip", a["dst"], f"not a bypass ({a['kind']}, alert {alert_id})")
+                if g.gateway is not None:
+                    g.gateway.unblock_ip(a["dst"])
+                else:
+                    g.db.remove_dyn_block(a["dst"])
+                g.inspector.dyn_blocked.discard(a["dst"])
+                if a["domain"] and a["kind"] == "tunnel_behaviour":
+                    g.db.add_allow("domain", registrable_domain(a["domain"]), f"alert {alert_id}")
+                note = f"{a['dst']} will no longer be blocked by this check"
+            elif action == "identity" and a["device_id"]:
+                g.db.set_suspect(a["device_id"], False)
+                fp = g.db.get_fingerprint(a["device_id"])
+                if fp:
+                    g.db.save_fingerprint(a["device_id"], fp["fp"], fp["hostname"], prev_fp=fp["fp"])
+                g.device_changed()
+                note = "device trusted again; its current fingerprint is now the expected one"
+            else:
+                note = "confidence for similar alerts lowered"
+        g.db.review_alert(alert_id, verdict)
+        g.refresh_allowlist()
+        return {"ok": True, "note": note}
+
+    @app.post("/api/devices/{device_id}/trust")
+    def trust_device(device_id: str):
+        """"It's me": lift identity quarantine after a fingerprint change."""
+        g.db.set_suspect(device_id, False)
+        fp = g.db.get_fingerprint(device_id)
+        if fp:
+            g.db.save_fingerprint(device_id, fp["fp"], fp["hostname"], prev_fp=fp["fp"])
+        for a in g.db.query("SELECT id FROM alerts WHERE device_id=? AND kind IN ('mac_spoof','mac_clone') "
+                            "AND review IS NULL", (device_id,)):
+            g.db.review_alert(a["id"], "fp")
+        g.device_changed()
+        g.refresh_allowlist()
+        return {"ok": True}
+
     @app.post("/api/alerts/{alert_id}/allow")
     def allow_from_alert(alert_id: int):
         """'This is fine': exempt the destination from the behaviour detector,
@@ -369,6 +438,145 @@ def create_app(g) -> FastAPI:
         g.db.delete_schedule(sid)
         g.device_changed()
         return {"ok": True}
+
+    # ------------------------------------------------------------ health
+    @app.get("/api/health")
+    def health(days: int = 7):
+        days = max(1, min(30, days))
+        now = time.time()
+        midnight = _midnight()
+        since = midnight - (days - 1) * 86400
+        devs = {d["device_id"]: d for d in devices_view()}
+        rows = [r for r in g.db.alert_rows_since(since)
+                if (r["category"] or KIND_META.get(r["kind"], ("info",))[0]) != "info"
+                and r["review"] != "fp"]
+        cats = [c for c in CATEGORIES if c != "info"]
+
+        def day_index(ts):
+            return int((ts - since) // 86400)
+
+        per = {}
+        hourly = {c: [0] * 24 for c in cats}
+        daily = {c: [0] * days for c in cats}
+        start24 = now - 86400
+        for r in rows:
+            cat = r["category"] or KIND_META.get(r["kind"], ("vpn",))[0]
+            conf = r["confidence"] or 0
+            daily[cat][min(days - 1, max(0, day_index(r["ts"])))] += r["count"]
+            if r["ts"] >= start24:
+                hourly[cat][min(23, int((r["ts"] - start24) // 3600))] += r["count"]
+            did = r["device_id"]
+            if not did:                     # gateway-level events (outages) live in the checks
+                continue
+            p = per.setdefault(did, {"attempts": 0, "today": 0, "kinds": set(), "strong_kinds": set(),
+                                     "strong_attempts": 0, "max_conf": 0, "last": 0, "tamper": False,
+                                     "by_cat": {c: 0 for c in cats}, "daily": [0] * days})
+            p["attempts"] += r["count"]
+            p["today"] += r["count"] if r["ts"] >= midnight else 0
+            p["kinds"].add(r["kind"])
+            p["by_cat"][cat] += r["count"]
+            p["daily"][min(days - 1, max(0, day_index(r["ts"])))] += r["count"]
+            p["max_conf"] = max(p["max_conf"], conf)
+            p["last"] = max(p["last"], r["last_ts"])
+            if conf >= 60:
+                p["strong_kinds"].add(r["kind"])
+                p["strong_attempts"] += r["count"]
+            if cat == "tamper" and conf >= 70:
+                p["tamper"] = True
+        blocked = {}
+        for b in g.db.blocked_by_device_day(since):
+            blocked.setdefault(b["device_id"], [0] * days)
+            i = min(days - 1, max(0, int(b["day_idx"])))
+            blocked[b["device_id"]][i] += b["n"]
+
+        def status(p):
+            if p["tamper"]:
+                return "tampering"
+            if len(p["strong_kinds"]) >= 3 or p["strong_attempts"] >= 20:
+                return "persistent"
+            if p["max_conf"] >= 50:
+                return "curious"
+            return "clean"
+
+        cards = []
+        for did in set(per) | {d for d, v in devs.items() if v["filtered"]}:
+            p = per.get(did)
+            d = devs.get(did, {})
+            bl = blocked.get(did, [0] * days)
+            card = {"device_id": did, "label": d.get("label") or ("The gateway" if did == "gateway" else did),
+                    "group": d.get("group"), "filtered": d.get("filtered", True), "online": d.get("online"),
+                    "paused": d.get("paused"), "suspect": d.get("suspect"),
+                    "blocked_today": bl[-1], "blocked_total": sum(bl), "blocked_daily": bl}
+            if p:
+                card.update(attempts=p["attempts"], attempts_today=p["today"], techniques=len(p["kinds"]),
+                            max_confidence=p["max_conf"], last_attempt=p["last"], by_category=p["by_cat"],
+                            daily=p["daily"], status=status(p))
+            else:
+                card.update(attempts=0, attempts_today=0, techniques=0, max_confidence=0, last_attempt=None,
+                            by_category={c: 0 for c in cats}, daily=[0] * days, status="clean")
+            if did != "gateway" and (card["attempts"] or card["blocked_total"]):
+                card["top_blocked"] = g.db.top_blocked_domains(since, did, 5)
+            cards.append(card)
+        order = {"tampering": 0, "persistent": 1, "curious": 2, "clean": 3}
+        cards.sort(key=lambda c: (order[c["status"]], -c["attempts"], -c["blocked_total"]))
+
+        # ---- network checks
+        st = g.status()
+        checks = []
+
+        def check(name, level, detail):
+            checks.append({"name": name, "level": level, "detail": detail})
+        check("Site filtering", "ok", f"{st['dns']['queries']:,} lookups answered since start")
+        if g.mode == "gateway":
+            gw = st.get("gateway") or {}
+            ok = gw.get("applied") and gw.get("nfq_running")
+            check("Firewall & inspector", "ok" if ok else "bad",
+                  f"active ({gw.get('backend')}), {gw.get('nfq_handled', 0):,} packets inspected" if ok
+                  else "NOT running - filtered devices have no web access (fail closed)")
+            lw = st.get("lanwatch") or {}
+            check("Tamper watch", "ok" if lw.get("running") else "bad",
+                  "listening for ARP/DHCP/router spoofing" if lw.get("running")
+                  else f"not running: {lw.get('error') or 'unknown'}")
+        else:
+            check("Enforcement", "warn", "Monitor mode: lookups are filtered, but nothing stops a device "
+                                         "that skips this DNS. Use gateway mode on the Pi.")
+        lu = st["lists"]["last_update"]
+        failing = [src["source"] for v in st["lists"]["status"].values() for src in v["sources"]
+                   if not src.get("ok") and src["source"].startswith("http")]
+        if lu and now - lu < 48 * 3600 and not failing:
+            check("Blocklists", "ok", f"updated {int((now - lu) // 3600)} h ago")
+        else:
+            check("Blocklists", "warn", ("some sources failed to download: " + ", ".join(
+                f.split("/")[2] for f in failing[:4])) if failing else "not refreshed in the last 48 h")
+        adults = [d for d in devs.values() if not d["filtered"]]
+        check("Adult devices assigned", "ok" if adults else "warn",
+              f"{len(adults)} device(s) unfiltered" if adults
+              else "No device is in an unfiltered group yet - the dashboard is reachable from every device")
+        tamper24 = [r for r in rows if (r["category"] == "tamper") and (r["confidence"] or 0) >= 70
+                    and r["last_ts"] >= start24 and r["kind"] != "gateway_offline"]
+        check("Tampering (24 h)", "bad" if tamper24 else "ok",
+              f"{len(tamper24)} high-confidence tampering event(s)" if tamper24 else "none detected")
+        offline = [r for r in rows if r["kind"] == "gateway_offline"]
+        check("Gateway uptime", "warn" if offline else "ok",
+              f"offline {len(offline)} time(s) in the last {days} days" if offline else
+              f"no gaps in the last {days} days")
+        check("Behaviour detector", "ok" if st.get("detector") else "warn",
+              "running" if st.get("detector") else "off (needs traffic accounting)")
+        bad = sum(c["level"] == "bad" for c in checks)
+        warn = sum(c["level"] == "warn" for c in checks)
+        score = max(0, 100 - 25 * bad - 8 * warn)
+
+        rev = g.db.review_stats()
+        return {
+            "days": days, "since": since, "score": score,
+            "overall": "At risk" if bad else ("Needs attention" if warn else "Healthy"),
+            "checks": checks, "devices": cards, "categories": {c: CATEGORIES[c] for c in cats},
+            "hourly": hourly, "hourly_start": start24, "daily": daily,
+            "totals": {c: sum(daily[c]) for c in cats},
+            "reviews": {"reviewed": sum(r["reviewed"] for r in rev), "fp": sum(r["fp"] or 0 for r in rev),
+                        "by_kind": [{"kind": r["kind"], "title": KINDS.get(r["kind"], (r["kind"],))[0],
+                                     "reviewed": r["reviewed"], "fp": r["fp"] or 0} for r in rev]},
+        }
 
     # ------------------------------------------------------------ system
     @app.get("/api/system")

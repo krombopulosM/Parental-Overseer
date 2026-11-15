@@ -7,6 +7,7 @@ lets readers and the writer work at the same time).
 """
 from __future__ import annotations
 
+import json
 import queue
 import sqlite3
 import threading
@@ -73,7 +74,21 @@ CREATE TABLE IF NOT EXISTS allowlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT, note TEXT, created REAL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS fingerprints (
+    mac TEXT PRIMARY KEY, fp TEXT, hostname TEXT, prev_fp TEXT, changed REAL,
+    first_seen REAL, last_seen REAL
+);
 """
+
+# Columns added after the first release; created on startup if missing.
+_ADDED_COLUMNS = [
+    ("alerts", "category", "TEXT"),
+    ("alerts", "confidence", "INTEGER"),
+    ("alerts", "confidence_why", "TEXT"),
+    ("alerts", "review", "TEXT"),            # NULL | 'fp' (not a bypass) | 'tp' (confirmed)
+    ("alerts", "reviewed_at", "REAL"),
+    ("devices", "suspect", "INTEGER DEFAULT 0"),
+]
 
 _FLOW_UPSERT = """
 INSERT INTO flows (flow_key, device_id, client_ip, proto, dst_ip, dst_port, domain, domain_src,
@@ -111,6 +126,9 @@ class DB:
         self._w.execute("PRAGMA synchronous=NORMAL")
         self._migrate()
         self._w.executescript(SCHEMA)
+        for table, col, decl in _ADDED_COLUMNS:
+            if col not in {r[1] for r in self._w.execute(f"PRAGMA table_info({table})")}:
+                self._w.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self._w.commit()
         self._r = sqlite3.connect(path, check_same_thread=False)
         self._r.row_factory = sqlite3.Row
@@ -352,16 +370,20 @@ class DB:
                 "AND last_ts>=? ORDER BY id DESC LIMIT 1",
                 (a.get("device_id"), a["kind"], a.get("dst"), a.get("domain"),
                  now - dedupe_window)).fetchone()
+            why = json.dumps(a.get("confidence_why") or [])
             if row:
-                self._w.execute("UPDATE alerts SET last_ts=?, count=count+1, detail=?, action=? "
-                                "WHERE id=?", (now, a.get("detail"), a.get("action"), row["id"]))
+                self._w.execute("UPDATE alerts SET last_ts=?, count=count+1, detail=?, action=?, "
+                                "confidence=?, confidence_why=? WHERE id=?",
+                                (now, a.get("detail"), a.get("action"), a.get("confidence"), why, row["id"]))
                 self._w.commit()
                 return row["id"], False
             cur = self._w.execute(
                 "INSERT INTO alerts (ts, last_ts, count, device_id, client_ip, kind, severity, detail, "
-                "dst, domain, action) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "dst, domain, action, category, confidence, confidence_why) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (now, now, 1, a.get("device_id"), a.get("client_ip"), a["kind"], a.get("severity"),
-                 a.get("detail"), a.get("dst"), a.get("domain"), a.get("action")))
+                 a.get("detail"), a.get("dst"), a.get("domain"), a.get("action"), a.get("category"),
+                 a.get("confidence"), why))
             self._w.commit()
             return cur.lastrowid, True
 
@@ -381,6 +403,66 @@ class DB:
 
     def ack_alert(self, alert_id):
         self.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (alert_id,))
+
+    def review_alert(self, alert_id, verdict):
+        self.execute("UPDATE alerts SET review=?, reviewed_at=?, acknowledged=1 WHERE id=?",
+                     (verdict, time.time(), alert_id))
+
+    def review_stats(self, days=180):
+        return self.query(
+            "SELECT kind, COUNT(*) AS reviewed, SUM(CASE WHEN review='fp' THEN 1 ELSE 0 END) AS fp "
+            "FROM alerts WHERE review IS NOT NULL AND reviewed_at>=? GROUP BY kind",
+            (time.time() - days * 86400,))
+
+    def distinct_kinds_since(self, device_id, since, exclude=None):
+        rows = self.query("SELECT DISTINCT kind FROM alerts WHERE device_id=? AND last_ts>=? "
+                          "AND (review IS NULL OR review!='fp')", (device_id, since))
+        return [r["kind"] for r in rows if r["kind"] != exclude]
+
+    # ------------------------------------------------------------- health aggregates
+    def alert_rows_since(self, since):
+        return self.query("SELECT id, ts, last_ts, count, device_id, kind, category, confidence, review "
+                          "FROM alerts WHERE last_ts>=?", (since,))
+
+    def blocked_by_device_day(self, since):
+        """Blocked lookups per device per day, days counted from `since` (local midnight)."""
+        return self.query(
+            "SELECT device_id, CAST((ts - ?) / 86400 AS INTEGER) AS day_idx, COUNT(*) AS n "
+            "FROM queries WHERE action='blocked' AND ts>=? GROUP BY device_id, day_idx", (since, since))
+
+    def top_blocked_domains(self, since, device_id=None, limit=8):
+        sql = ("SELECT qname, COUNT(*) AS n, MAX(reason) AS reason FROM queries "
+               "WHERE action='blocked' AND ts>=?")
+        params = [since]
+        if device_id:
+            sql += " AND device_id=?"
+            params.append(device_id)
+        sql += " GROUP BY qname ORDER BY n DESC LIMIT ?"
+        params.append(limit)
+        return self.query(sql, tuple(params))
+
+    # ------------------------------------------------------------- DHCP fingerprints
+    def get_fingerprint(self, mac):
+        return self.query_one("SELECT * FROM fingerprints WHERE mac=?", (mac,))
+
+    def save_fingerprint(self, mac, fp, hostname, prev_fp=None, changed=None):
+        now = time.time()
+        self.execute(
+            "INSERT INTO fingerprints (mac, fp, hostname, prev_fp, changed, first_seen, last_seen) "
+            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(mac) DO UPDATE SET fp=excluded.fp, "
+            "hostname=COALESCE(excluded.hostname, fingerprints.hostname), "
+            "prev_fp=COALESCE(excluded.prev_fp, fingerprints.prev_fp), "
+            "changed=COALESCE(excluded.changed, fingerprints.changed), last_seen=excluded.last_seen",
+            (mac, fp, hostname, prev_fp, changed, now, now))
+
+    def find_fingerprint_match(self, fp, hostname, exclude_mac):
+        if not hostname:
+            return None
+        return self.query_one("SELECT * FROM fingerprints WHERE fp=? AND hostname=? AND mac!=? "
+                              "ORDER BY last_seen DESC LIMIT 1", (fp, hostname, exclude_mac))
+
+    def set_suspect(self, device_id, flag):
+        self.execute("UPDATE devices SET suspect=? WHERE device_id=?", (1 if flag else 0, device_id))
 
     # ------------------------------------------------------------- rules
     def add_rule(self, scope, target, pattern, action):

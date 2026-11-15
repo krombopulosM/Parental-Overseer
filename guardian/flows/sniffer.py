@@ -29,9 +29,10 @@ class _Entry:
 class SnifferBackend:
     name = "sniffer"
 
-    def __init__(self, cfg: dict, labels):
+    def __init__(self, cfg: dict, labels, observer=None):
         self.iface = (cfg.get("flows") or {}).get("sniffer_interface")
         self.labels = labels
+        self.observer = observer          # inspector.observe: passive torrent detection
         self._flows: dict[tuple, _Entry] = {}
         self._lock = threading.Lock()
         self._local = self._local_ips()
@@ -84,6 +85,7 @@ class SnifferBackend:
         if p is None or not (p.is_tcp or p.is_udp):
             return
         src_local, dst_local = self._is_local(p.src), self._is_local(p.dst)
+        raw = bytes(layer)
         if src_local and not dst_local:
             up, key = True, ("tcp" if p.is_tcp else "udp", p.src, p.sport, p.dst, p.dport)
         elif dst_local and not src_local:
@@ -98,7 +100,9 @@ class SnifferBackend:
             if up:
                 e.up += p.length
                 e.pu += 1
+                observe = self.observer is not None and e.pu <= 3
             else:
+                observe = False
                 e.down += p.length
                 e.pd += 1
             if p.is_tcp and p.flags & (TCP_FIN | TCP_RST):
@@ -108,6 +112,11 @@ class SnifferBackend:
             if need_label:
                 e.buf += p.payload
                 buf = e.buf
+        if observe:
+            try:
+                self.observer(raw)
+            except Exception:
+                pass
         if need_label:
             res = parse_client_hello(buf) if key[4] == 443 else parse_http_request(buf)
             if res is not NEED_MORE:

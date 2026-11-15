@@ -40,6 +40,8 @@ class Identity:
         self._lock = threading.Lock()
         self._last_refresh = 0.0
         self._misses: dict[str, float] = {}
+        self._lease_by_ip: dict[str, str] = {}
+        self._lease_by_mac: dict[str, str] = {}
         # /proc/net/arp is a cheap kernel read, so on Linux re-read it on almost
         # every miss (a new device's first DNS query can beat our last read);
         # Windows has to spawn `arp -a`, so throttle harder there.
@@ -52,10 +54,12 @@ class Identity:
             return
         self._last_refresh = now
         arp = self._read_linux_arp() if sys.platform.startswith("linux") else self._read_windows_arp()
-        names = self._read_leases()
+        names, lease_by_ip = self._read_leases()
         with self._lock:
             self._arp = arp
             self._names = names
+            self._lease_by_ip = lease_by_ip
+            self._lease_by_mac = {m: i for i, m in lease_by_ip.items()}
 
     def _read_linux_arp(self) -> dict:
         out = {}
@@ -90,21 +94,28 @@ class Identity:
                     out[m.group(1)] = mac
         return out
 
-    def _read_leases(self) -> dict:
-        names = {}
+    def _read_leases(self):
+        names, by_ip = {}, {}
         if not self.leases_path or not os.path.exists(self.leases_path):
-            return names
+            return names, by_ip
+        now = time.time()
         try:
             with open(self.leases_path, "r") as fh:
                 for line in fh:                       # expiry mac ip hostname clientid
                     p = line.split()
-                    if len(p) >= 4 and p[3] != "*":
-                        mac = norm_mac(p[1])
-                        if mac:
-                            names[mac] = p[3]
+                    if len(p) < 4:
+                        continue
+                    mac = norm_mac(p[1])
+                    if not mac:
+                        continue
+                    if p[0].isdigit() and int(p[0]) and int(p[0]) < now:
+                        continue                      # expired lease
+                    by_ip[p[2]] = mac
+                    if p[3] != "*":
+                        names[mac] = p[3]
         except OSError:
             pass
-        return names
+        return names, by_ip
 
     # ---------------------------------------------------------------- lookups
     def learn(self, ip: str, mac: str | None):
@@ -136,6 +147,19 @@ class Identity:
             return None
         with self._lock:
             return self._names.get(mac)
+
+    def has_leases(self) -> bool:
+        return bool(self.leases_path and os.path.exists(self.leases_path))
+
+    def lease_owner(self, ip: str) -> str | None:
+        self.refresh()
+        with self._lock:
+            return self._lease_by_ip.get(ip)
+
+    def lease_ip(self, mac: str) -> str | None:
+        self.refresh()
+        with self._lock:
+            return self._lease_by_mac.get(mac)
 
     def device_id_for(self, ip: str) -> tuple[str, str | None]:
         mac = self.mac_for(ip)

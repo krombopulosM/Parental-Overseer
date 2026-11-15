@@ -47,20 +47,33 @@ class Policy:
         self._rules: list[dict] = []
         self._groups: dict[str, str | None] = {}
         self._touched: dict[str, float] = {}
+        self._suspect: set[str] = set()
         self._lock = threading.Lock()
         self.reload()
 
     # ------------------------------------------------------------ state
     def reload(self):
         rules = self.db.list_rules() if self.db else []
-        groups = {d["device_id"]: d.get("group_name") for d in self.db.list_devices()} if self.db else {}
+        devices = self.db.list_devices() if self.db else []
+        groups = {d["device_id"]: d.get("group_name") for d in devices}
+        suspect = {d["device_id"] for d in devices if d.get("suspect")}
         with self._lock:
             self._rules = rules
             self._groups = groups
+            self._suspect = suspect
 
     def group_name(self, device_id: str) -> str:
         if self.forced_group:
             return self.forced_group
+        if device_id in self._suspect:            # identity under suspicion: strictest group
+            return self.cfg["default_group"]
+        g = self._groups.get(device_id)
+        return g if g in self.cfg["groups"] else self.cfg["default_group"]
+
+    def is_suspect(self, device_id: str) -> bool:
+        return device_id in self._suspect
+
+    def configured_group(self, device_id: str) -> str:
         g = self._groups.get(device_id)
         return g if g in self.cfg["groups"] else self.cfg["default_group"]
 

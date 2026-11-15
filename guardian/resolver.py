@@ -103,6 +103,9 @@ class GuardianResolver(BaseResolver):
         self.block_qtypes = set(d.get("block_qtypes_filtered") or [])
         self.strip_aaaa = cfg["mode"] == "gateway" and not cfg["gateway"].get("ipv6", False)
         self.ech_names = set(cfg["enforcement"].get("ech_public_names") or [])
+        # DNS meant for some other server is redirected to this port, so we know
+        # the device was set up with its own DNS server.
+        self.redirect_port = int(d.get("redirect_port", 0)) if cfg["mode"] == "gateway" else 0
         self.policy, self.lists, self.dnscache, self.db = policy, lists, dnscache, db
         self.alerts, self.scheduler, self.stats, self.tunnel = alerts, scheduler, stats, tunnel
         self._seen_domains: set[str] = set()
@@ -153,6 +156,12 @@ class GuardianResolver(BaseResolver):
         ctx = self.policy.context(client_ip)
         self.stats.note(client_ip)
         self.counters["queries"] += 1
+        redirected = bool(self.redirect_port) and \
+            getattr(getattr(handler, "server", None), "server_address", ("", 0))[1] == self.redirect_port
+        if redirected and ctx.filtered and self.alerts:
+            self.alerts.emit("custom_dns", device_id=ctx.device_id, client_ip=ctx.ip, action="redirected",
+                             detail="Sent its DNS lookups to a server of its own choosing instead of the "
+                                    "gateway. They were quietly redirected here and filtered anyway.")
 
         paused, why = self.scheduler.is_paused(ctx.device_id, ctx.group)
         if paused:
@@ -179,6 +188,10 @@ class GuardianResolver(BaseResolver):
                 self.alerts.emit("bypass_domain", device_id=ctx.device_id, client_ip=ctx.ip,
                                  domain=registrable_domain(qname),
                                  detail=f"Looked up {qname} (VPN / proxy / encrypted-DNS service)")
+            elif decision.category == "torrent" and ctx.filtered and self.alerts:
+                self.alerts.emit("torrent_site", device_id=ctx.device_id, client_ip=ctx.ip,
+                                 domain=registrable_domain(qname),
+                                 detail=f"Looked up {qname} (torrent site, tracker or client)")
             return self._reply(request, RCODE.NXDOMAIN)
 
         if qtype in ("HTTPS", "SVCB", "TYPE65", "TYPE64") and (

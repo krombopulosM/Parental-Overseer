@@ -285,5 +285,103 @@ def suite_parent_failclosed():
     check("inspector down: parent unaffected", tls("198.51.100.77", "vps.test"), "ok")
 
 
+
+
+# ---------------------------------------------------------------- torrents & countermeasures
+DHT_PING = b"d1:ad2:id20:" + os.urandom(20) + b"e1:q4:ping1:t2:aa1:y1:qe"
+BT_HS = b"\x13BitTorrent protocol" + b"\x00" * 8 + os.urandom(40)
+
+
+def suite_kid_torrent():
+    check("torrent site blocked in DNS", dns("thepiratebay.org")[0], 3)
+    check("DHT bootstrap node blocked in DNS", dns("router.bittorrent.com")[0], 3)
+    dns("raw.test")
+    check("BitTorrent peer connection disguised on 443", raw_tcp("198.51.100.80", 443, BT_HS), "reset")
+    dns("site.test")
+    check("HTTP tracker announce", http("198.51.100.10", "site.test", "GET",
+                                        "/announce?info_hash=%aa%bb&peer_id=-qB4620-&port=6881"), "reset")
+    check("DHT ping (UDP 6881)", udp("198.51.100.77", 6881, DHT_PING), "timeout")
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)          # encrypted client: no signature, many peers
+    for i in range(1, 31):
+        s.sendto(os.urandom(120), (f"198.51.101.{i}", 20000 + i))
+    s.close()
+    time.sleep(0.5)
+    m = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    m.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+    m.sendto(b"BT-SEARCH * HTTP/1.1\r\nHost: 239.192.152.143:6771\r\nPort: 6881\r\nInfohash: " +
+             os.urandom(20).hex().encode() + b"\r\n\r\n", ("239.192.152.143", 6771))
+    m.close()
+
+
+def suite_kid_sneaky():
+    """Quieter countermeasures (no auto-pause)."""
+    dns("site.test")
+    for i in range(6):                     # traffic from a device hidden behind a NAT/hotspot
+        s = socket.socket()
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, 63)
+        s.settimeout(2)
+        try:
+            s.connect(("198.51.100.10", 443))
+        except OSError:
+            pass
+        s.close()
+    check("SSH to the gateway", raw_tcp(GW, 22, b"SSH-2.0-x\r\n"), "timeout")
+
+
+def suite_kid_scan():
+    for p in (21, 23, 25, 80, 139, 445, 3389, 5900, 8443):
+        raw_tcp(GW, p, b"x", timeout=0.5)
+
+
+def _sendp(frame):
+    from scapy.all import sendp
+    sendp(frame, iface="eth0", verbose=False)
+
+
+def suite_kid_l2_attacks():
+    from scapy.all import ARP, BOOTP, DHCP, IP, UDP, Ether
+    from scapy.layers.inet6 import ICMPv6ND_RA, IPv6
+    me = open("/sys/class/net/eth0/address").read().strip()
+    bc = "ff:ff:ff:ff:ff:ff"
+    _sendp(Ether(src=me, dst=bc) / ARP(op=2, hwsrc=me, psrc=GW, hwdst=bc, pdst="10.50.0.20"))
+    _sendp(Ether(src=me, dst=bc) / ARP(op=2, hwsrc=me, psrc="10.50.0.20", hwdst=bc, pdst=GW))
+    _sendp(Ether(src=me, dst=bc) / IP(src="10.50.0.10", dst="255.255.255.255") / UDP(sport=67, dport=68) /
+           BOOTP(op=2, yiaddr="10.50.0.99") / DHCP(options=[("message-type", "offer"), ("router", "10.50.0.10"),
+                                                            ("name_server", "10.50.0.10"), "end"]))
+    _sendp(Ether(src=me, dst="33:33:00:00:00:01") / IPv6(src="fe80::10", dst="ff02::1") / ICMPv6ND_RA())
+
+
+def suite_kid_clone_parent():
+    """The kid's laptop announces itself with the parent laptop's hardware address."""
+    from scapy.all import BOOTP, DHCP, IP, UDP, Ether
+    me = open("/sys/class/net/eth0/address").read().strip()
+    chaddr = bytes.fromhex("020000000020") + b"\x00" * 10
+    _sendp(Ether(src=me, dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255") /
+           UDP(sport=68, dport=67) / BOOTP(op=1, chaddr=chaddr) /
+           DHCP(options=[("message-type", "request"), ("param_req_list", [1, 121, 3, 6, 15, 31, 33, 43, 44, 46, 47, 119, 252]),
+                         ("vendor_class_id", b"MSFT 5.0"), ("hostname", b"PARENT-LAPTOP"), "end"]))
+
+
+def suite_parent_dhcp():
+    """The parent laptop's genuine DHCP request (learned as its fingerprint)."""
+    from scapy.all import BOOTP, DHCP, IP, UDP, Ether
+    me = open("/sys/class/net/eth0/address").read().strip()
+    chaddr = bytes.fromhex(me.replace(":", "")) + b"\x00" * 10
+    _sendp(Ether(src=me, dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255") /
+           UDP(sport=68, dport=67) / BOOTP(op=1, chaddr=chaddr) /
+           DHCP(options=[("message-type", "request"), ("param_req_list", [1, 3, 6, 15, 119, 252, 95, 44, 46]),
+                         ("hostname", b"PARENT-LAPTOP"), "end"]))
+
+
+def suite_parent_quarantined():
+    check("cloned parent identity: treated as filtered until confirmed",
+          tls("198.51.100.77", "vps.test"), "refused")
+
+
+def suite_kid_paused_after_attack():
+    check("attacking device auto-paused: web blocked", tls("198.51.100.10", "site.test"),
+          OneOf("reset", "refused", "timeout", "os:113"))
+
+
 if __name__ == "__main__":
     globals()[f"suite_{sys.argv[1]}"]()

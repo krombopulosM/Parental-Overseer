@@ -9,6 +9,15 @@ traffic passes through it. It:
 - **stops bypasses**: VPNs (including obfuscated ones like ProtonVPN Stealth and
   Mullvad's udp2tcp / Shadowsocks / QUIC modes), encrypted DNS, proxies, Tor,
   iCloud Private Relay, hard-coded IPs, disguised tunnels
+- **stops torrents**, including encrypted ones and ones hidden on port 443
+- **defends itself** against a skilled kid attacking the gateway: spoofed or
+  cloned MAC addresses, ARP spoofing, rogue DHCP servers or IPv6 routers,
+  port scans, password guessing, hidden hotspots, manual DNS or IP settings,
+  and pulling the plug
+- **scores every alert** with how confident it is that the attempt was
+  deliberate, and learns from your reviews
+- shows a **Health page**: is the protection working, and who tried what, how
+  often
 - is controlled from a **browser dashboard** with a login
 
 It works at the level of **site names** (`youtube.com`), not individual pages,
@@ -50,6 +59,61 @@ For example, Mullvad has to get past three separate layers:
 
 ProtonVPN Stealth *is* real TLS, but it connects to server IPs the Pi's DNS never handed out, and those IPs are on the Proton server list anyway.
 
+## Torrents
+
+| Signal | Catches |
+|---|---|
+| Torrent sites, public trackers, DHT bootstrap nodes, client websites (DNS + TLS name) | Finding torrents, a fresh client finding peers |
+| BitTorrent handshake, even disguised on port 443 or 80 | Peer connections |
+| HTTP tracker announces (`/announce?info_hash=`), UDP tracker protocol | Tracker contact |
+| DHT and uTP packet headers (unencrypted even when the client "encrypts") | Trackerless/magnet downloads, uTP transfers |
+| Contacting 25+ different peers on random ports within a minute | **Fully encrypted** clients with no visible signature |
+| BitTorrent local peer discovery broadcasts on the LAN | A client running at all, even if nothing reached the internet |
+
+Kids' devices already get no UDP and only real web traffic on 80/443, so
+torrents are blocked several times over. The `consoles` group (UDP allowed) still
+has torrent signatures blocked.
+
+## Defences against countermeasures
+
+On the Pi, a passive **LAN watch** listens (never transmits, except to undo ARP
+spoofing) for attacks on the gateway itself. Every response follows one rule:
+**an automatic defence can restrict, never grant.**
+
+| Countermeasure | What happens |
+|---|---|
+| Copy a parent's MAC address | The device's **DHCP fingerprint** (the options its OS asks for) doesn't match the parent device's, so that address is treated as filtered until the parent clicks **"It's me"** |
+| Two devices sharing one MAC | Fingerprint flips back and forth: flagged as a clone |
+| Change MAC to escape the kids group | New MAC with the same fingerprint and hostname keeps the kids' group. Copying an *adult's* fingerprint gets nothing |
+| ARP-spoof the gateway (MITM) | Corrective ARP announcements; the attacker is auto-paused |
+| Claim another device's IP | The real owner is pinned in the gateway's neighbour table; auto-pause |
+| Run a DHCP server or IPv6 router | Flagged; auto-pause |
+| Port-scan the Pi / try SSH or the dashboard | Silently dropped and flagged; scans auto-pause |
+| Guess the dashboard password | Flagged after 3 tries, locked out for 5 minutes after 5 |
+| Set a manual DNS server | Quietly redirected and filtered anyway, and flagged |
+| Set a static IP | Flagged (still filtered by MAC) |
+| Share the connection to hide devices (hotspot, VM, travel router) | Spotted from the extra router hop in packet TTLs and flagged; everything behind it gets this device's rules |
+| Unplug or power off the Pi | Forwarding is off until the firewall loads; kids' web access fails closed while the service is down; the gap is reported on next start |
+
+Auto-pause only ever applies to filtered devices, defaults to 30 minutes, and
+can be turned off with `tamper.auto_pause_minutes: 0`.
+
+## Confidence scores
+
+Every alert shows **"N% deliberate"**. Hover over it to see the reasoning and
+when it might be innocent. The score combines:
+
+1. **A base rate for that kind of event.** A ClientHello split into 1-byte
+   pieces scores 95%. A direct-IP connection (often just an app's cached
+   address) scores 50%.
+2. **Your reviews.** **Confirmed** and **Not a bypass** recalibrate the base for
+   that alert type in your household. "Not a bypass" also undoes the block where
+   that's safe: the destination is exempted, or "It's me" restores trust. Site
+   blocks are never lifted from an alert; use Rules for that.
+3. **The device's behaviour.** Several different techniques from one device in
+   a day raises every score. Repeats add a little. A destination you previously
+   marked fine lowers it.
+
 ### Honest limits
 
 - **Mobile data / a friend's hotspot** skips your network entirely. Pair this
@@ -59,6 +123,10 @@ ProtonVPN Stealth *is* real TLS, but it connects to server IPs the Pi's DNS neve
 - **A child who learns an adult device's MAC address** could impersonate it.
   Give adults their own Wi-Fi network (SSID/VLAN) and set
   `gateway.trusted_interfaces` so adult status only counts on that network.
+- **Traffic between two devices on your Wi-Fi never passes the Pi**, so a
+  kid proxying through a sibling's or parent's computer, or poisoning
+  another device's ARP cache one-way, is invisible to it. Turn on **client
+  isolation** (often called "AP isolation") on the access point.
 - **Physical access wins.** If a kid can plug into the ISP router directly, or
   the ISP router's Wi-Fi is still on, the Pi is bypassed. Lock that down.
 - The behaviour detector is a heuristic. Every alert explains its score, and
@@ -155,13 +223,22 @@ so there's never an unfiltered window. Machine-specific settings live in
 
 - **Overview:** devices online, lookups, blocks, bypass attempts and data
   today; time per service; latest bypass attempts.
+- **Health:**
+  - a protection score and checks: firewall running, tamper watch running,
+    blocklists fresh, adults assigned, recent tampering, outages;
+  - bypass attempts by category over the last 24 hours (chart or table);
+  - a card per device with attempts today and this week, techniques used,
+    sites blocked, a 7-day trend, its most certain alert, and a status of
+    **Clean / Curious / Persistent / Tampering**;
+  - your review history.
 - **Devices:** set groups, rename devices, see online time / data / blocks,
   pause a device.
 - **Device page:** time and data per service (today and last 7 days), live
   connections, lookups, bypass attempts.
 - **Activity:** every connection (device, site, destination, duration, ↓/↑
   data, blocked or not) and every lookup.
-- **Alerts:** every bypass attempt in plain English, with *Dismiss* and *This is fine*.
+- **Alerts:** every bypass attempt in plain English, with its confidence and
+  *Confirmed* / *Not a bypass* / *Dismiss*.
 - **Rules & schedules:** block/allow sites for everyone or a group,
   internet-off times, automatically blocked destinations.
 - **System:** component health, blocklist status, inspector counters, password.
@@ -188,16 +265,19 @@ Categories, lists, detector thresholds and schedules are all in
 ## Tests
 
 ```bash
-pytest -q                               # 44 unit tests (parsers, inspector, resolver, detector, DB...)
+pytest -q                               # 62 unit tests (parsers, inspector, torrents, LAN watch, confidence...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
 The end-to-end test builds a miniature home network out of Linux network
 namespaces: two kids' devices, a parent's laptop, a console, the real gateway
 (nftables + inspector) and a fake internet with VPN servers, a DoH resolver,
-disguised tunnels and an ISP router. It then attempts every bypass above:
-**70/70 checks pass**, including killing the service and confirming kids'
-access fails closed while the parent is unaffected.
+disguised tunnels and an ISP router. It then attempts every bypass above,
+plus torrents and real attacks on the gateway (ARP spoofing, rogue DHCP, a
+cloned parent MAC, port scans, password guessing, a hidden NAT, a simulated
+power cut). **105 checks pass.** It also kills the service and confirms kids'
+access fails closed while the parent is unaffected. (The IPv6 router check is
+skipped on kernels booted without IPv6.)
 
 ## Layout
 
@@ -212,6 +292,8 @@ guardian/
   dnscache.py          which IPs each device was told about
   flows/               traffic accounting: conntrack (Pi) / packet capture (PC)
   detector.py          behavioural VPN/tunnel detection
+  lanwatch.py          passive LAN defences (ARP/DHCP/RA spoofing, MAC cloning, torrent discovery)
+  confidence.py        "how deliberate was this?" scoring + review calibration
   gateway/             nftables ruleset, NFQUEUE runner
   lists.py             blocklist + VPN-server list downloads
   webapp.py, static/   dashboard

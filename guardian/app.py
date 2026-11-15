@@ -58,6 +58,13 @@ class Guardian:
             self.detector = Detector(cfg, self.db, self.monitor, self.stats, self.lists,
                                      self.alerts, self.gateway)
         self.errors: dict[str, str] = {}
+        self.lanwatch = None
+        if self.mode == "gateway" and (cfg.get("tamper") or {}).get("enabled", True):
+            from .lanwatch import LanWatch
+            self.lanwatch = LanWatch(cfg, self.db, self.policy, self.identity, self.alerts,
+                                     on_change=self.device_changed)
+        self.alerts.listeners.append(self._auto_pause)
+        self.refresh_allowlist()
 
     def _flow_backend(self):
         if self.mode == "gateway":
@@ -68,14 +75,17 @@ class Guardian:
             return None
         from .flows.sniffer import SnifferBackend
         if SnifferBackend.available():
-            return SnifferBackend(self.cfg, self.labels)
+            return SnifferBackend(self.cfg, self.labels, observer=self.inspector.observe)
         return None
 
     # ------------------------------------------------------------ lifecycle
     def start(self, download_lists: bool = True):
+        self._check_offline_gap()
         d = self.cfg["dns"]
         self.dns_servers = start_dns(self.resolver, d["listen_host"], int(d["listen_port"]))
         print(f"[dns] listening on {d['listen_host']}:{d['listen_port']} -> {', '.join(d['upstreams'])}")
+        if self.mode == "gateway" and d.get("redirect_port"):
+            self.dns_servers += start_dns(self.resolver, d["listen_host"], int(d["redirect_port"]))
         if self.gateway is not None:
             from .gateway.nfq import NfqRunner
             self.gateway.setup()
@@ -92,7 +102,50 @@ class Guardian:
             print("[flows] traffic accounting disabled (no capture backend available)")
         if self.detector is not None:
             self.detector.start()
+        if self.lanwatch is not None:
+            self.lanwatch.start()
+            print(f"[lanwatch] watching {', '.join(self.lanwatch.ifaces)} for tampering")
         threading.Thread(target=self._housekeeping, name="housekeeping", daemon=True).start()
+
+    # ------------------------------------------------------------ defences
+    def refresh_allowlist(self):
+        """Destinations a parent marked 'not a bypass' skip the inspector's checks."""
+        rows = self.db.allowlist()
+        self.inspector.allow_ips = {r["value"] for r in rows if r["kind"] == "ip"}
+        self.alerts.scorer.reload()
+        if self.detector is not None:
+            self.detector.reload_allowlist()
+
+    def _auto_pause(self, alert):
+        """Pause a filtered device caught attacking the network itself."""
+        tm = self.cfg.get("tamper") or {}
+        minutes = float(tm.get("auto_pause_minutes", 0) or 0)
+        did = alert.get("device_id")
+        if not minutes or not did or alert["kind"] not in (tm.get("auto_pause_kinds") or []):
+            return
+        if (alert.get("confidence") or 0) < int(tm.get("auto_pause_confidence", 85)):
+            return
+        if not self.cfg["groups"][self.policy.configured_group(did)]["filtered"]:
+            return                                   # never cut off an adult's device automatically
+        if self.db.get_device(did) is None:
+            self.db.update_device(did)
+        self.scheduler.pause(did, minutes)
+        self.db.execute("UPDATE alerts SET action=? WHERE id=(SELECT MAX(id) FROM alerts WHERE device_id=? "
+                        "AND kind=?)", (f"device paused for {int(minutes)} min", did, alert["kind"]))
+        self.device_changed()
+
+    def _check_offline_gap(self):
+        hb = self.db.get_meta("heartbeat")
+        limit = float((self.cfg.get("tamper") or {}).get("offline_alert_minutes", 5)) * 60
+        now = time.time()
+        if hb and now - float(hb) > limit:
+            start = float(hb)
+            fmt = "%a %H:%M"
+            self.alerts.emit("gateway_offline", detail=(
+                f"The gateway was not running from {time.strftime(fmt, time.localtime(start))} to "
+                f"{time.strftime(fmt, time.localtime(now))} ({(now - start) / 60:.0f} min). A power cut or "
+                f"reboot does this - so does someone unplugging it."), action="noted")
+        self.db.set_meta("heartbeat", str(now))
 
     def stop(self):
         if self.gateway is not None:
@@ -104,9 +157,13 @@ class Guardian:
         while True:
             time.sleep(15)
             try:
+                self.db.set_meta("heartbeat", str(time.time()))
                 self.scheduler.reload()
                 if self.gateway is not None:
                     self.sync_gateway()
+                if self.lanwatch is not None:
+                    self.lanwatch.expire_pins()
+                    self.lanwatch.check_static_ips()
                 self.dnscache.prune()
                 if time.time() - last_prune > 3600:
                     self.db.prune(self.cfg.get("retention_days", 30))
@@ -134,7 +191,10 @@ class Guardian:
                 trusted.add(mac)
             elif gc.get("allow_udp"):
                 udp_ok.add(mac)
-            if g in admin_groups:
+            # Dashboard reachability follows the *configured* group: a parent whose
+            # identity is in quarantine must still reach the dashboard to click
+            # "It's me" (the password still protects it).
+            if self.policy.configured_group(d["device_id"]) in admin_groups:
                 admin.add(mac)
             if self.scheduler.is_paused(d["device_id"], g)[0]:
                 paused.add(mac)
@@ -168,6 +228,9 @@ class Guardian:
                             "error": self.monitor.error or getattr(self.monitor.backend, "error", None)}
         if self.detector is not None:
             s["detector"] = {"last_run": self.detector.last_run, "recent": self.detector.flagged[-10:]}
+        if self.lanwatch is not None:
+            s["lanwatch"] = {"running": self.lanwatch.running, "error": self.lanwatch.error,
+                             "seen": dict(self.lanwatch.counters), "pinned": list(self.lanwatch.pins)}
         if self.gateway is not None:
             s["gateway"] = dict(self.gateway.status)
             if self.nfq is not None:

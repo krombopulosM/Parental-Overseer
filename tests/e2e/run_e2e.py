@@ -56,11 +56,11 @@ def build_network():
     sh("ip link set pgw-wanp netns pg-inet")
     sh("ip -n pg-gw addr add 203.0.113.1/24 dev wan0 && ip -n pg-gw link set wan0 up")
     sh("ip -n pg-inet addr add 203.0.113.2/24 dev pgw-wanp && ip -n pg-inet link set pgw-wanp up")
-    for ip in INET_IPS:
+    for ip in INET_IPS + [f"198.51.101.{i}" for i in range(1, 31)]:
         sh(f"ip -n pg-inet addr add {ip}/32 dev lo")
     sh("ip -n pg-gw route add default via 203.0.113.2")
-    sh("ip -n pg-gw link add lan0 type bridge && ip -n pg-gw addr add 10.50.0.1/24 dev lan0 "
-       "&& ip -n pg-gw link set lan0 up")
+    sh("ip -n pg-gw link add lan0 type bridge mcast_snooping 0 && ip -n pg-gw addr add 10.50.0.1/24 dev lan0 "
+       "&& ip -n pg-gw link set lan0 up")       # behave like an ordinary switch: flood multicast
     for i, (ns, ip, mac) in enumerate(LAN):
         sh(f"ip link add pgv{i} type veth peer name pgp{i}")
         sh(f"ip link set pgv{i} netns {ns} && ip -n {ns} link set pgv{i} name eth0")
@@ -87,6 +87,7 @@ def write_config():
         "adult": {"files": [f"{W}/adult.txt", f"{b}/adult.txt"]},
         "gambling": {"files": []},
         "bypass": {"files": [f"{b}/vpn.txt", f"{b}/doh.txt", f"{b}/bypass.txt"]},
+        "torrent": {"files": [f"{b}/torrent.txt"]},
     }
     cfg["ip_lists"] = {"vpn": {"files": [f"{b}/vpn-ips.txt", f"{W}/vpn-test.txt"]},
                        "doh": {"files": [f"{b}/doh-ips.txt"]}}
@@ -109,6 +110,12 @@ def start_processes():
     env = dict(os.environ, GUARDIAN_PASSWORD="e2e-password")
     subprocess.run([PY, f"{ROOT}/run.py", "--config", f"{W}/config.yaml", "--set-password"], env=env,
                    check=True, capture_output=True)
+    # pretend the gateway was last alive an hour ago (power cut / unplugged)
+    import sqlite3
+    c = sqlite3.connect(f"{W}/guardian.db")
+    c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('heartbeat', ?)", (str(time.time() - 3600),))
+    c.commit()
+    c.close()
     gw = subprocess.Popen(["ip", "netns", "exec", "pg-gw", PY, f"{ROOT}/run.py", "--config", f"{W}/config.yaml",
                            "--no-download"], stdout=open(f"{W}/gateway.log", "w"), stderr=subprocess.STDOUT)
     procs.append(gw)
@@ -130,6 +137,10 @@ assert c.post("/api/login", json={"password": "e2e-password"}, headers=H).status
 op = json.loads(sys.argv[1])
 if op["do"] == "get":
     print(json.dumps(c.get(op["path"]).json()))
+elif op["do"] == "badlogin":
+    for _ in range(op["body"]["n"]):
+        httpx.post("http://10.50.0.1:8080/api/login", json={"password": "wrong-guess"}, headers=H)
+    print(json.dumps({"ok": True}))
 else:
     r = c.post(op["path"], json=op.get("body", {}), headers=H)
     print(json.dumps({"status": r.status_code, "body": r.json()}))
@@ -170,7 +181,8 @@ def run_suite(ns, suite, section):
 
 
 def record(section, name, ok, got=""):
-    results.append({"section": section, "name": name, "ok": bool(ok), "got": got})
+    """ok=None records an explicit SKIP (shown, not counted as a pass)."""
+    results.append({"section": section, "name": name, "ok": None if ok is None else bool(ok), "got": got})
 
 
 def main():
@@ -239,6 +251,65 @@ def main():
         dyn = api("get", "/api/rules")["dyn_blocks"]
         record(sec, "tunnel destination auto-blocked", any(d["ip"] == "198.51.100.79" for d in dyn), dyn[:1])
 
+        # ---- Torrents and countermeasures
+        run_suite("pg-parent", "parent_dhcp", "Torrents")
+        run_suite("pg-kid", "kid_torrent", "Torrents")
+        run_suite("pg-kid", "kid_sneaky", "Countermeasures")
+        api("badlogin", "", {"n": 3})
+        run_suite("pg-kid", "kid_clone_parent", "Countermeasures")
+        time.sleep(1.5)
+        run_suite("pg-parent", "parent_quarantined", "Countermeasures")
+        api("post", f"/api/devices/{parent}/trust")
+        time.sleep(1)
+        run_suite("pg-parent", "parent", "Countermeasures: after the parent clicks \"It's me\"")
+        run_suite("pg-kid", "kid_scan", "Countermeasures")
+        time.sleep(1.5)
+        run_suite("pg-kid", "kid_paused_after_attack", "Countermeasures")
+        run_suite("pg-kid", "kid_l2_attacks", "Countermeasures")
+        time.sleep(2)
+
+        sec = "Countermeasure alerts (each rejected + flagged with confidence)"
+        alerts = api("get", "/api/alerts?limit=1000")["alerts"]
+        first = {}
+        for a in alerts:
+            first.setdefault(a["kind"], a)
+        for k in ["torrent", "torrent_site", "torrent_peers", "torrent_lan", "custom_dns", "hidden_router",
+                  "gateway_probe", "port_scan", "arp_spoof", "ip_spoof", "rogue_dhcp", "rogue_ra", "mac_spoof",
+                  "dashboard_bruteforce", "gateway_offline"]:
+            a = first.get(k)
+            if k == "rogue_ra" and not os.path.exists("/proc/sys/net/ipv6"):
+                record(sec, k, None, "kernel booted with IPv6 disabled - can't carry an IPv6 router "
+                                     "advertisement (covered by unit test test_rogue_ra_and_torrent_lan)")
+                continue
+            record(sec, k, a is not None and a["confidence"] is not None,
+                   f"{a['confidence']}% deliberate - {a['detail'][:90]}" if a else "missing")
+        unscored = [a["kind"] for a in alerts if a["category"] != "info" and a["confidence"] is None]
+        record(sec, "every alert carries a confidence score", not unscored, unscored[:5])
+        devs = {d["ip"]: d for d in api("get", "/api/devices")["devices"]}
+        record(sec, "kid auto-paused after attacking the network", devs["10.50.0.10"]["paused"],
+               devs["10.50.0.10"]["paused_reason"])
+        record(sec, "parent trusted again after 'It's me'", not devs["10.50.0.20"]["suspect"], "")
+
+        sec = "Health dashboard"
+        h = api("get", "/api/health?days=7")
+        card = next(c for c in h["devices"] if c["device_id"] == kid)
+        record(sec, "kid's card status is 'tampering'", card["status"] == "tampering", card["status"])
+        record(sec, "attempts counted per category", all(card["by_category"][c] > 0 for c in
+               ("vpn", "dns", "disguise", "torrent", "tamper")), card["by_category"])
+        record(sec, "24-hour chart has data", sum(sum(v) for v in h["hourly"].values()) > 20,
+               {c: sum(v) for c, v in h["hourly"].items()})
+        record(sec, "blocked sites counted", card["blocked_total"] > 0, card["blocked_total"])
+        record(sec, "gateway outage shows in checks", any(c["name"] == "Gateway uptime" and c["level"] == "warn"
+                                                          for c in h["checks"]), h["checks"])
+        nd = next(a for a in alerts if a["kind"] == "no_dns")
+        r = api("post", f"/api/alerts/{nd['id']}/review", {"verdict": "fp"})
+        h2 = api("get", "/api/health?days=7")
+        record(sec, "'Not a bypass' review recorded and calibrates", h2["reviews"]["fp"] == h["reviews"]["fp"] + 1 and
+               "no longer be blocked" in r["body"]["note"], r["body"])
+
+        api("post", f"/api/devices/{kid}/pause", {"minutes": 0})
+        time.sleep(1)
+
         # ---- Tamper resistance: kill the inspector
         gw.terminate()
         gw.wait(timeout=20)
@@ -251,7 +322,7 @@ def main():
             cleanup()
         else:
             print(f"namespaces kept; logs in {W}")
-    sys.exit(0 if results and all(r["ok"] for r in results) else 1)
+    sys.exit(0 if results and all(r["ok"] is not False for r in results) else 1)
 
 
 def report():
@@ -260,11 +331,13 @@ def report():
         if r["section"] != section:
             section = r["section"]
             print(f"\n== {section}")
-        mark = "PASS" if r["ok"] else "FAIL"
-        extra = "" if r["ok"] else f"   got={r.get('got')!r} want={r.get('want')!r}"
+        mark = "SKIP" if r["ok"] is None else ("PASS" if r["ok"] else "FAIL")
+        extra = f"   ({r['got']})" if r["ok"] is None else \
+            ("" if r["ok"] else f"   got={r.get('got')!r} want={r.get('want')!r}")
         print(f"  [{mark}] {r['name']}{extra}")
-    n_ok = sum(r["ok"] for r in results)
-    print(f"\n{n_ok}/{len(results)} checks passed")
+    n_ok = sum(1 for r in results if r["ok"])
+    n_skip = sum(1 for r in results if r["ok"] is None)
+    print(f"\n{n_ok}/{len(results) - n_skip} checks passed" + (f", {n_skip} skipped" if n_skip else ""))
 
 
 if __name__ == "__main__":

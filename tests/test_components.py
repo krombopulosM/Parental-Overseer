@@ -270,9 +270,10 @@ def test_nft_render_both_backends():
     gw = NftGateway(cfg, ListManager(cfg), None)
     gw.backend = "nft"
     t = gw.render()
-    assert t.count("queue num 0") == 4 and "bypass" not in t      # fail closed by default
+    assert t.count("queue num 0") == 5 and "bypass" not in t      # fail closed by default
     assert 'iifname != { "eth1" } return' in t and "meta nfproto ipv6 drop" in t
-    assert "dnat ip to 192.168.50.1:53" in t
+    assert "dnat ip to 192.168.50.1:5354" in t                    # custom-DNS redirect port
+    assert "meta mark 0x2 meta l4proto { tcp, udp } ct original packets <= 1 queue num 0" in t
     gw.backend = "xt"
     t2 = gw.render()
     assert "queue" not in t2 and "meta mark set 0x20 accept" in t2

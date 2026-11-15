@@ -1,0 +1,58 @@
+# Torrent indexes, trackers, DHT bootstrap nodes and torrent clients' own sites.
+# Blocking DHT bootstrap hosts stops a fresh client from finding any peers.
+
+# Indexes / search sites
+thepiratebay.org
+1337x.to
+1337x.st
+1337x.ws
+yts.mx
+yts.am
+nyaa.si
+torrentgalaxy.to
+limetorrents.lol
+rutracker.org
+rutor.info
+kickasstorrents.to
+eztvx.to
+eztv.re
+torlock.com
+magnetdl.com
+torrentdownloads.pro
+bitsearch.to
+btdig.com
+fitgirl-repacks.site
+dodi-repacks.site
+solidtorrents.to
+snowfl.com
+
+# Public trackers
+opentrackr.org
+openbittorrent.com
+stealth.si
+demonii.com
+exodus.desync.com
+torrent.eu.org
+explodie.org
+tracker.leechers-paradise.org
+coppersurfer.tk
+openwebtorrent.com
+
+# DHT bootstrap nodes
+router.bittorrent.com
+router.utorrent.com
+dht.transmissionbt.com
+dht.aelitis.com
+dht.libtorrent.org
+
+# Clients
+utorrent.com
+bittorrent.com
+qbittorrent.org
+transmissionbt.com
+deluge-torrent.org
+tixati.com
+vuze.com
+frostwire.com
+webtorrent.io
+biglybt.com

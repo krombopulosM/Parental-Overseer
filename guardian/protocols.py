@@ -34,6 +34,7 @@ class Packet:
     flags: int = 0
     payload: bytes = b""
     length: int = 0
+    ttl: int = 0             # IPv4 TTL / IPv6 hop limit as received
 
     @property
     def is_tcp(self):
@@ -58,16 +59,16 @@ def parse_ip(data: bytes) -> Packet | None:
         ihl = (data[0] & 0x0F) * 4
         total = struct.unpack("!H", data[2:4])[0] or len(data)
         frag = struct.unpack("!H", data[6:8])[0]
-        proto = data[9]
+        proto, ttl = data[9], data[8]
         src = socket.inet_ntop(socket.AF_INET, data[12:16])
         dst = socket.inet_ntop(socket.AF_INET, data[16:20])
         body = data[ihl:total]
         if frag & 0x1FFF:                       # non-first fragment: no L4 header
-            return Packet(4, src, dst, proto, length=total)
+            return Packet(4, src, dst, proto, length=total, ttl=ttl)
     elif ver == 6:
         if len(data) < 40:
             return None
-        proto = data[6]
+        proto, ttl = data[6], data[7]
         src = socket.inet_ntop(socket.AF_INET6, data[8:24])
         dst = socket.inet_ntop(socket.AF_INET6, data[24:40])
         total = 40 + struct.unpack("!H", data[4:6])[0]
@@ -76,14 +77,14 @@ def parse_ip(data: bytes) -> Packet | None:
             nxt = body[0]
             if proto == 44:
                 if struct.unpack("!H", body[2:4])[0] & 0xFFF8:
-                    return Packet(6, src, dst, nxt, length=total)
+                    return Packet(6, src, dst, nxt, length=total, ttl=ttl)
                 hlen = 8
             else:
                 hlen = (body[1] + 1) * 8
             proto, body = nxt, body[hlen:]
     else:
         return None
-    pkt = Packet(ver, src, dst, proto, length=total)
+    pkt = Packet(ver, src, dst, proto, length=total, ttl=ttl)
     if proto == 6 and len(body) >= 20:
         pkt.sport, pkt.dport, pkt.seq = struct.unpack("!HHI", body[:8])
         off = (body[12] >> 4) * 4
@@ -372,12 +373,44 @@ def openvpn_confirm(first: bytes, second: bytes) -> bool:
             and (second[0] >> 3) in (4, 5, 7, 10) and first[1:9] == second[1:9])
 
 
+# ---------------------------------------------------------------- BitTorrent
+
+BT_HANDSHAKE = b"\x13BitTorrent protocol"
+UDP_TRACKER_MAGIC = bytes.fromhex("0000041727101980")
+
+
+def is_bittorrent_handshake(buf: bytes) -> bool:
+    """Plain (unencrypted) peer-wire handshake. Needs only the first 20 bytes."""
+    return buf[:20] == BT_HANDSHAKE[:len(buf[:20])] and len(buf) >= 20
+
+
+def classify_torrent_udp(p: bytes) -> str | None:
+    """DHT, uTP and UDP-tracker packets all have recognisable, unencrypted headers
+    (even when the client encrypts its peer connections)."""
+    if len(p) >= 16 and p[:8] == UDP_TRACKER_MAGIC and p[8:12] == b"\x00\x00\x00\x00":
+        return "BitTorrent UDP tracker"
+    if len(p) >= 12 and p[:4] in (b"d1:a", b"d1:r", b"d1:e", b"d1:q", b"d1:t", b"d1:v", b"d2:i", b"d2:r") \
+            and (b"2:id20:" in p[:64] or b"1:y1:" in p or b"9:get_peers" in p or b"9:find_node" in p):
+        return "BitTorrent DHT"
+    # uTP SYN: type 4 / version 1, timestamp_difference must be 0 on a SYN
+    if len(p) >= 20 and p[0] == 0x41 and p[1] in (0, 1, 2) and p[8:12] == b"\x00\x00\x00\x00":
+        return "BitTorrent uTP"
+    return None
+
+
+def is_torrent_http(target: str) -> bool:
+    t = target.lower()
+    return t.startswith(("/announce", "/scrape")) or "info_hash=" in t
+
+
 def identify_tcp_stream(buf: bytes) -> str:
     """Describe the opening bytes of a non-TLS, non-HTTP stream for an alert."""
     if not buf:
         return "no data"
     if buf.startswith(b"SSH-"):
         return "SSH"
+    if is_bittorrent_handshake(buf):
+        return "BitTorrent peer connection"
     if len(buf) >= 3:
         n = struct.unpack("!H", buf[:2])[0]
         if n == 148 and buf[2] == 1 and buf[3:6] == b"\x00\x00\x00":

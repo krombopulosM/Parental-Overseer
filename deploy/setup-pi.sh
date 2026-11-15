@@ -30,7 +30,7 @@ LAN_NET=$(python3 -c "import ipaddress; print(ipaddress.ip_interface('$LAN_IP/$L
 echo "==> Installing packages"
 apt-get update -q
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-venv python3-dev build-essential \
-  libnetfilter-queue-dev nftables conntrack dnsmasq
+  libnetfilter-queue-dev nftables conntrack dnsmasq tcpdump
 
 echo "==> Installing app to $APP_DIR"
 mkdir -p "$APP_DIR"
