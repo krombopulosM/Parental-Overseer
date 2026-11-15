@@ -45,6 +45,14 @@ DEFAULTS: dict = {
         "protocol_exempt_domains": ["whatsapp.net", "whatsapp.com"],
     },
     "torrent": {"fanout_peers": 25, "window": 60},
+    "downloads": {
+        "policy": "review_suspicious", "min_bytes": 5_000_000, "min_rate": 200_000, "suspicious_score": 50,
+        "risky_extensions": ["exe", "msi", "bat", "cmd", "com", "scr", "ps1", "vbs", "js", "jar", "apk", "xapk",
+                             "apks", "ipa", "dmg", "pkg", "deb", "rpm", "iso", "img", "zip", "rar", "7z",
+                             "torrent"],
+        "trusted_services": ["apple", "microsoft", "google", "steam", "epicgames", "xbox", "playstation",
+                             "nintendo", "minecraft", "roblox", "spotify", "netflix", "youtube"],
+    },
     "tamper": {
         "enabled": True, "auto_quarantine_confidence": 80, "carry_over_identity": True,
         "auto_pause_minutes": 30, "auto_pause_confidence": 85,
@@ -58,7 +66,7 @@ DEFAULTS: dict = {
         "threshold": 70, "block_hours": 24, "learning_days": 3, "exempt_services": [],
     },
     "flows": {
-        "poll_interval": 5, "active_minute_bytes": 10_000, "sniffer_interface": None,
+        "poll_interval": 2, "active_minute_bytes": 10_000, "sniffer_interface": None,
         "log_trusted_devices": True,
     },
     "gateway": {

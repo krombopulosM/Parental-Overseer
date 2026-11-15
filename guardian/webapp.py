@@ -14,6 +14,7 @@ import json
 
 from .alerts import KINDS
 from .auth import Auth
+from .activity import CLASSES
 from .confidence import CATEGORIES, KIND_META
 from .services import registrable_domain, service_label
 
@@ -232,8 +233,24 @@ def create_app(g) -> FastAPI:
             live = [flow_view(r.row(), names, now) for r in g.monitor.active_flows()
                     if r.device_id == device_id]
             live.sort(key=lambda f: -(f["bytes_down"] + f["bytes_up"]))
+        timeline = []
+        for row in g.db.activity_since(device_id, int(midnight // 60)):
+            last = timeline[-1] if timeline else None
+            if last and last["activity"] == row["activity"] and row["minute"] - last["end_minute"] <= 2:
+                last["end_minute"] = row["minute"]
+                last["headlines"][row["headline"]] = last["headlines"].get(row["headline"], 0) + 1
+            else:
+                timeline.append({"activity": row["activity"], "start_minute": row["minute"],
+                                 "end_minute": row["minute"], "headlines": {row["headline"]: 1}})
+        for t in timeline:
+            t["start"], t["end"] = t["start_minute"] * 60, (t["end_minute"] + 1) * 60
+            t["headline"] = max(t["headlines"], key=t["headlines"].get)
+            t["label"] = CLASSES.get(t["activity"], t["activity"])
+            del t["headlines"]
         return {
             "device": view,
+            "timeline": timeline,
+            "midnight": midnight,
             "services": services_view(int(midnight // 60), device_id, 50),
             "week": services_view(int((midnight - 6 * 86400) // 60), device_id, 25),
             "queries": g.db.recent_queries(150, device_id=device_id),
@@ -438,6 +455,94 @@ def create_app(g) -> FastAPI:
         g.db.delete_schedule(sid)
         g.device_changed()
         return {"ok": True}
+
+    # ------------------------------------------------------------ live
+    def live_flow(r, names, now):
+        v = flow_view(r.row(), names, now)
+        a = r.activity
+        v.update(activity=a.cls if a else "idle", activity_label=CLASSES.get(a.cls, "") if a else "Idle",
+                 activity_confidence=a.confidence if a else None, activity_why=a.why if a else [],
+                 download=r.dl_state)
+        recent = [t for t in r.ticks if t[0] >= now - 10]
+        secs = sum(t[1] for t in recent) or 1
+        v["rate_down"] = sum(t[3] for t in recent) / secs
+        v["rate_up"] = sum(t[2] for t in recent) / secs
+        return v
+
+    @app.get("/api/live")
+    def live_all():
+        if g.monitor is None:
+            return {"devices": [], "monitor": False}
+        names = names_map()
+        devs = {d["device_id"]: d for d in g.db.list_devices()}
+        out = []
+        for did in list(g.monitor.live):
+            lv = g.monitor.live_view(did)
+            series = lv["series"]
+            last = series[-5:]
+            rate = sum(sum(v for k, v in p.items() if k != "ts") for p in last) / max(1, len(last))
+            d = devs.get(did, {})
+            out.append({"device_id": did, "label": names.get(did, did), "group": g.policy.group_name(did),
+                        "headline": lv["now"]["headline"], "activity": lv["now"]["activity"],
+                        "confidence": lv["now"]["confidence"], "rate": rate,
+                        "spark": [round(sum(v for k, v in p.items() if k != "ts")) for p in series[-30:]],
+                        "online": (d.get("last_seen") or 0) > time.time() - 300})
+        out.sort(key=lambda x: -x["rate"])
+        return {"devices": out, "monitor": True, "poll": g.monitor.poll}
+
+    @app.get("/api/live/{device_id}")
+    def live_device(device_id: str):
+        if g.monitor is None:
+            return {"series": [], "now": None, "classes": CLASSES, "flows": [], "monitor": False}
+        names = names_map()
+        now = time.time()
+        lv = g.monitor.live_view(device_id)
+        flows = [live_flow(r, names, now) for r in lv["flows"]]
+        flows.sort(key=lambda f: -(f["rate_down"] + f["rate_up"]))
+        return {"series": lv["series"], "now": lv["now"], "classes": CLASSES, "flows": flows[:60],
+                "poll": lv["poll"], "monitor": True, "label": names.get(device_id, device_id)}
+
+    # ------------------------------------------------------------ downloads
+    def download_view(r, names):
+        try:
+            reasons = json.loads(r.get("reasons") or "[]")
+        except ValueError:
+            reasons = []
+        return {**r, "reasons": reasons, "device": names.get(r["device_id"], r["client_ip"])}
+
+    @app.get("/api/downloads")
+    def downloads(status: str | None = None, limit: int = 200):
+        names = names_map()
+        rows = g.db.downloads(limit=min(limit, 1000), status=status)
+        pending = g.db.downloads(limit=500, status="pending")
+        return {"downloads": [download_view(r, names) for r in rows],
+                "pending": [download_view(r, names) for r in pending],
+                "policy": g.downloads.default_policy, "inline": g.downloads.inline}
+
+    @app.post("/api/downloads/{rid}/approve")
+    def approve_download(rid: int):
+        r = g.downloads.approve(rid)
+        if not r:
+            raise HTTPException(404)
+        for a in g.db.query("SELECT id FROM alerts WHERE kind='download_held' AND device_id=? AND domain=? "
+                            "AND review IS NULL", (r["device_id"], r["site"])):
+            g.db.review_alert(a["id"], "fp")
+        g.refresh_allowlist()
+        return {"ok": True, "note": f"{r['site']} unblocked for this device - the download can be retried"}
+
+    @app.post("/api/downloads/{rid}/deny")
+    def deny_download(rid: int):
+        r = g.downloads.deny(rid)
+        if not r:
+            raise HTTPException(404)
+        if not r["site"].startswith("ip:"):
+            g.db.add_rule("device", r["device_id"], r["site"], "block")
+            g.policy.reload()
+        for a in g.db.query("SELECT id FROM alerts WHERE kind='download_held' AND device_id=? AND domain=? "
+                            "AND review IS NULL", (r["device_id"], r["site"])):
+            g.db.review_alert(a["id"], "tp")
+        g.refresh_allowlist()
+        return {"ok": True, "note": f"{r['site']} is now blocked for this device"}
 
     # ------------------------------------------------------------ health
     @app.get("/api/health")

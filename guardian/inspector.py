@@ -113,6 +113,7 @@ class Inspector:
         self.ech_names = {n.lower() for n in enf.get("ech_public_names") or []}
         self.dyn_blocked: set[str] = set()
         self.allow_ips: set[str] = set()          # destinations a parent marked "not a bypass"
+        self.downloads = None                     # DownloadGuard (holds suspicious downloads)
         self.flows: dict[tuple, _Flow] = {}
         self.stats = collections.Counter()
         self._since_gc = 0
@@ -296,6 +297,10 @@ class Inspector:
 
     def _name_checks(self, ctx, pkt, key, fl, name, what) -> Verdict:
         """Shared checks once we know the site name (TLS SNI or HTTP Host)."""
+        if self.downloads is not None and self.downloads.held_for(ctx.device_id, name):
+            return self._block(ctx, pkt, key, "download_held",
+                               f"{name}: a download from this site is waiting for your review",
+                               alert=False, flow=fl)
         d = self.policy.decide(ctx, name)
         if d.block:
             kind = "bypass_domain" if d.category == "bypass" else "dns_bypass_site"
@@ -339,6 +344,10 @@ class Inspector:
         if req.method == "CONNECT":
             return self._block(ctx, pkt, key, "http_proxy",
                                f"HTTP CONNECT to {req.target} (proxy tunnel)", flow=fl)
+        if self.downloads is not None:
+            held = self.downloads.check_http(ctx, pkt, req)
+            if held:
+                return self._block(ctx, pkt, key, "download_held", held, alert=False, flow=fl)
         if is_torrent_http(req.target):
             return self._block(ctx, pkt, key, "torrent",
                                f"Torrent tracker announce to {req.host or pkt.dst}", flow=fl,

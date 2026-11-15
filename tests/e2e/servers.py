@@ -26,6 +26,8 @@ ZONE = {
     "cloudflare-ech.com": "198.51.100.10", "vps.test": "198.51.100.77", "relay.test": "198.51.100.77",
     "vpn-server.test": "198.51.100.66", "serverfirst.test": "198.51.100.78",
     "tunnel.test": "198.51.100.79", "raw.test": "198.51.100.80",
+    "rr1---sn-abc.googlevideo.com": "198.51.100.81", "dl.mediafire.com": "198.51.100.82",
+    "plain.test": "198.51.100.10",
 }
 
 
@@ -48,7 +50,12 @@ class TLSHandler(socketserver.BaseRequestHandler):
             return
         try:
             data = conn.recv(100)
-            if data.startswith(b"BULK"):
+            if data.startswith(b"VIDEO"):         # a video player: ~1 MB every 2.5 s
+                end = time.time() + 60
+                while time.time() < end:
+                    conn.sendall(b"v" * 1_000_000)
+                    time.sleep(2.5)
+            elif data.startswith(b"BULK"):
                 end = time.time() + 60
                 chunk = b"x" * 65536
                 while time.time() < end:
@@ -117,7 +124,8 @@ def main(cert, key):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
     DNSServer(Zone(), address="198.51.100.53", port=53, logger=DNSLogger("-request,-reply")).start_thread()
-    for ip in ("198.51.100.10", "198.51.100.66", "198.51.100.77", "198.51.100.79", "9.9.9.9"):
+    for ip in ("198.51.100.10", "198.51.100.66", "198.51.100.77", "198.51.100.79", "198.51.100.81",
+               "198.51.100.82", "9.9.9.9"):
         tcp((ip, 443), TLSHandler, ctx)
     tcp(("198.51.100.10", 80), HTTPHandler)
     tcp(("192.168.1.1", 80), HTTPHandler)

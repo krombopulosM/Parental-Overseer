@@ -70,6 +70,13 @@ categories:
     urls: [https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts]
   torrent:                    # torrent sites, trackers, DHT bootstrap nodes, clients
     files: [blocklists/builtin/torrent.txt]
+  # The next two aren't blocked by default (no group lists them); the download
+  # guard uses them to judge where a download comes from. Add one to a group's
+  # categories to block those sites outright.
+  piracy:                     # cracked software / warez / streaming-piracy sites
+    urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/anti.piracy-onlydomains.txt]
+  filehost:                   # file lockers and APK download sites
+    files: [blocklists/builtin/filehost.txt]
   bypass:                     # VPNs, proxies, encrypted-DNS resolvers, Tor, private relays
     files: [blocklists/builtin/vpn.txt, blocklists/builtin/doh.txt, blocklists/builtin/bypass.txt]
     urls: [https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt]
@@ -110,6 +117,20 @@ torrent:
   fanout_peers: 25             # distinct peers on random ports within `window` = torrent/P2P client
   window: 60
 
+# ---------------------------------------------------------------- downloads
+downloads:
+  # off | review_suspicious | review_all (every download from an untrusted site)
+  #     | block_suspicious (no review - just stop them)
+  # A group can override this with its own `downloads:` setting.
+  policy: review_suspicious
+  min_bytes: 5000000           # a sustained one-way transfer becomes a "download" after this much
+  min_rate: 200000             # ... at this speed (bytes/s)
+  suspicious_score: 50         # hold at or above this suspicion score
+  risky_extensions: [exe, msi, bat, cmd, com, scr, ps1, vbs, js, jar, apk, xapk, apks, ipa, dmg, pkg,
+                     deb, rpm, iso, img, zip, rar, 7z, torrent]
+  trusted_services: [apple, microsoft, google, steam, epicgames, xbox, playstation, nintendo, minecraft,
+                     roblox, spotify, netflix, youtube]
+
 # ---------------------------------------------------------------- countermeasure defences
 tamper:
   enabled: true
@@ -145,7 +166,7 @@ detector:
 
 # ---------------------------------------------------------------- traffic accounting
 flows:
-  poll_interval: 5
+  poll_interval: 2              # also the live graph's resolution
   active_minute_bytes: 10000   # a minute counts as "in use" above this much traffic
   sniffer_interface: null      # monitor mode: capture interface (null = scapy default)
   log_trusted_devices: true

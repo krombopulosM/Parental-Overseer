@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS allowlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT, note TEXT, created REAL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, device_id TEXT, client_ip TEXT, site TEXT, domain TEXT,
+    dst_ip TEXT, dst_port INTEGER, filename TEXT, bytes_seen INTEGER, rate REAL, score INTEGER,
+    reasons TEXT, status TEXT, note TEXT, decided_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_downloads_ts ON downloads(ts);
+CREATE TABLE IF NOT EXISTS activity (
+    device_id TEXT, minute INTEGER, activity TEXT, headline TEXT, confidence INTEGER,
+    PRIMARY KEY (device_id, minute)
+);
 CREATE TABLE IF NOT EXISTS fingerprints (
     mac TEXT PRIMARY KEY, fp TEXT, hostname TEXT, prev_fp TEXT, changed REAL,
     first_seen REAL, last_seen REAL
@@ -461,6 +471,43 @@ class DB:
         return self.query_one("SELECT * FROM fingerprints WHERE fp=? AND hostname=? AND mac!=? "
                               "ORDER BY last_seen DESC LIMIT 1", (fp, hostname, exclude_mac))
 
+    # ------------------------------------------------------------- downloads
+    def add_download(self, d: dict):
+        cur = self.execute(
+            "INSERT INTO downloads (ts, device_id, client_ip, site, domain, dst_ip, dst_port, filename, bytes_seen, "
+            "rate, score, reasons, status, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (time.time(), d.get("device_id"), d.get("client_ip"), d.get("site"), d.get("domain"), d.get("dst_ip"),
+             d.get("dst_port"), d.get("filename"), d.get("bytes_seen"), d.get("rate"), d.get("score"),
+             d.get("reasons"), d.get("status"), d.get("note")))
+        return cur.lastrowid
+
+    def get_download(self, rid):
+        return self.query_one("SELECT * FROM downloads WHERE id=?", (rid,))
+
+    def update_download(self, rid, status):
+        self.execute("UPDATE downloads SET status=?, decided_at=? WHERE id=?", (status, time.time(), rid))
+
+    def downloads(self, limit=200, status=None, device_id=None, since=0):
+        where, params = ["ts>=?"], [since]
+        if status:
+            where.append("status=?")
+            params.append(status)
+        if device_id:
+            where.append("device_id=?")
+            params.append(device_id)
+        params.append(limit)
+        return self.query(f"SELECT * FROM downloads WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
+                          tuple(params))
+
+    # ------------------------------------------------------------- activity timeline
+    def set_activity(self, device_id, minute, activity, headline, confidence):
+        self.enqueue("INSERT OR REPLACE INTO activity (device_id, minute, activity, headline, confidence) "
+                     "VALUES (?,?,?,?,?)", (device_id, minute, activity, headline, confidence))
+
+    def activity_since(self, device_id, since_minute):
+        return self.query("SELECT minute, activity, headline, confidence FROM activity "
+                          "WHERE device_id=? AND minute>=? ORDER BY minute", (device_id, since_minute))
+
     def set_suspect(self, device_id, flag):
         self.execute("UPDATE devices SET suspect=? WHERE device_id=?", (1 if flag else 0, device_id))
 
@@ -518,3 +565,4 @@ class DB:
         self.enqueue("DELETE FROM usage WHERE minute<?", (int(cutoff // 60) - 60 * 24 * 60,))
         self.enqueue("DELETE FROM alerts WHERE last_ts<?", (cutoff,))
         self.enqueue("DELETE FROM dyn_blocks WHERE expires<?", (time.time(),))
+        self.enqueue("DELETE FROM activity WHERE minute<?", (int(cutoff // 60),))

@@ -52,3 +52,9 @@ def iface_mac(dev: str) -> str | None:
             return fh.read().strip().lower()
     except OSError:
         return None
+
+
+def kill_flow(proto: str, src: str, sport: int, dst: str, dport: int):
+    """Cut exactly one connection."""
+    run(["conntrack", "-D", "-p", proto, "-s", src, "-d", dst, "--sport", str(sport), "--dport", str(dport)],
+        check=False)

@@ -383,5 +383,80 @@ def suite_kid_paused_after_attack():
           OneOf("reset", "refused", "timeout", "os:113"))
 
 
+# ---------------------------------------------------------------- activity & downloads
+def _tls_stream(ip, sni, request, seconds, timeout=3):
+    """Open TLS, send a request, read for up to `seconds`. Returns (result, bytes)."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    got, start = 0, time.time()
+    try:
+        raw = socket.create_connection((ip, 443), timeout=timeout)
+        s = ctx.wrap_socket(raw, server_hostname=sni)
+        s.sendall(request)
+        s.settimeout(timeout)
+        while time.time() - start < seconds:
+            d = s.recv(65536)
+            if not d:
+                return "closed", got
+            got += len(d)
+        return "complete", got
+    except (socket.timeout, TimeoutError):
+        return "stalled", got
+    except (ConnectionResetError, ConnectionRefusedError):
+        return "reset", got
+    except ssl.SSLError as e:
+        return ("reset" if "EOF" in str(e) or "reset" in str(e).lower() else f"ssl:{e.reason}"), got
+    except OSError as e:
+        return f"os:{e.errno}", got
+
+
+def suite_console_play():
+    """A game (steady small UDP packets) with YouTube playing in the background, ~25 s."""
+    import threading
+    dns("rr1---sn-abc.googlevideo.com")
+
+    def game():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.05)
+        end = time.time() + 25
+        while time.time() < end:
+            s.sendto(os.urandom(100), ("198.51.100.77", 3074))
+            try:
+                s.recvfrom(2048)
+            except socket.timeout:
+                pass
+            time.sleep(1 / 30)
+    t = threading.Thread(target=game)
+    t.start()
+    _tls_stream("198.51.100.81", "rr1---sn-abc.googlevideo.com", b"VIDEO", 25)
+    t.join()
+
+
+def suite_kid_download():
+    dns("dl.mediafire.com")
+    t0 = time.time()
+    res, got = _tls_stream("198.51.100.82", "dl.mediafire.com", b"BULK", 40)
+    check(f"download from a file-sharing site cut off after {time.time() - t0:.1f}s / {got / 1e6:.1f} MB",
+          res, OneOf("stalled", "reset", "closed"))
+    check("retry while held for review", tls("198.51.100.82", "dl.mediafire.com"), "reset")
+
+
+def suite_kid_download_retry():
+    dns("dl.mediafire.com")
+    res, got = _tls_stream("198.51.100.82", "dl.mediafire.com", b"BULK", 6)
+    check(f"after approval the download works ({got / 1e6:.0f} MB in 6 s)", res, "complete")
+
+
+def suite_kid_http_exe():
+    dns("plain.test")
+    check("plain-HTTP .exe download stopped before it starts",
+          http("198.51.100.10", "plain.test", "GET", "/files/FreeRobux-Setup.exe"), "reset")
+
+
+def suite_kid_after_deny():
+    check("denied download site now blocked for this device", dns("plain.test")[0], 3)
+
+
 if __name__ == "__main__":
     globals()[f"suite_{sys.argv[1]}"]()

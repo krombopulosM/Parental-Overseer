@@ -181,7 +181,146 @@ views.overview = {
   },
 };
 
-const CATS = ["vpn", "dns", "disguise", "torrent", "tamper"];
+const CATS = ["vpn", "dns", "disguise", "torrent", "tamper", "download"];
+const ACTS = ["video", "gaming", "browsing", "download", "social", "music", "call", "other"];
+const fmtRate = v => fmtBytes(v) + "/s";
+function actBadge(cls, label) {
+  return `<span class="actbadge"><span class="sw" style="background:var(--act-${esc(cls)})"></span>${esc(label)}</span>`;
+}
+function liveArea(el, series, classes, poll) {
+  const W = Math.max(320, el.clientWidth - 32), H = 230, L = 62, B = 22, T = 10, R = 8;
+  const now = Date.now() / 1000, span = 300, x0 = now - span;
+  const pts = series.filter(p => p.ts >= x0 - poll);
+  const val = (p, c) => Number(p[c]) || 0;
+  const totals = pts.map(p => ACTS.reduce((s, c) => s + val(p, c), 0));
+  const max = niceMax(Math.max(...totals, 50000));
+  const pw = W - L - R, ph = H - T - B;
+  const x = ts => L + Math.max(0, Math.min(1, (ts - x0) / span)) * pw;
+  const y = v => T + ph - (v / max) * ph;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Live throughput by activity, last 5 minutes">`;
+  for (const t of [0, max / 2, max]) {
+    svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}"/>`;
+    svg += `<text class="axis" x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${t ? fmtRate(t) : "0"}</text>`;
+  }
+  for (let m = 5; m >= 0; m--) {
+    svg += `<text class="axis" x="${x(now - m * 60)}" y="${H - 6}" text-anchor="${m === 0 ? "end" : "middle"}">${m ? `-${m} min` : "now"}</text>`;
+  }
+  if (pts.length > 1) {
+    const base = pts.map(() => 0);
+    for (const c of ACTS) {
+      if (!pts.some(p => val(p, c))) continue;
+      const top = pts.map((p, i) => base[i] + val(p, c));
+      const up = pts.map((p, i) => `${x(p.ts).toFixed(1)},${y(top[i]).toFixed(1)}`);
+      const down = pts.map((p, i) => `${x(p.ts).toFixed(1)},${y(base[i]).toFixed(1)}`).reverse();
+      svg += `<path d="M${up.join(" L")} L${down.join(" L")} Z" fill="var(--act-${c})" stroke="var(--panel)" stroke-width="1"/>`;
+      top.forEach((v, i) => { base[i] = v; });
+    }
+  }
+  svg += `<line id="xh" x1="0" x2="0" y1="${T}" y2="${T + ph}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/>`;
+  svg += `<rect id="hit" x="${L}" y="${T}" width="${pw}" height="${ph}" fill="transparent"/></svg><div class="tip" hidden></div>`;
+  el.innerHTML = svg;
+  if (!pts.length) return;
+  const tip = $(".tip", el), xh = $("#xh", el);
+  el.onmousemove = e => {
+    if (e.target.id !== "hit") { tip.hidden = true; xh.setAttribute("visibility", "hidden"); return; }
+    const box = el.querySelector("svg").getBoundingClientRect();
+    const ts = x0 + ((e.clientX - box.left) * (W / box.width) - L) / pw * span;
+    let k = 0;
+    pts.forEach((p, i) => { if (Math.abs(p.ts - ts) < Math.abs(pts[k].ts - ts)) k = i; });
+    const p = pts[k];
+    xh.setAttribute("x1", x(p.ts)); xh.setAttribute("x2", x(p.ts)); xh.setAttribute("visibility", "visible");
+    const rows = ACTS.filter(c => val(p, c)).map(c => `<div class="row"><span><span class="sw" style="background:var(--act-${c})"></span>${esc(classes[c])}</span><b>${fmtRate(val(p, c))}</b></div>`);
+    tip.innerHTML = `<div class="muted" style="margin-bottom:4px">${clock(p.ts)}</div>${rows.join("") || `<div class="muted">idle</div>`}`;
+    tip.hidden = false;
+    const ob = el.getBoundingClientRect();
+    tip.style.left = Math.min(ob.width - tip.offsetWidth - 4, e.clientX - ob.left + 14) + "px";
+    tip.style.top = Math.max(0, Math.min(ob.height - tip.offsetHeight - 4, e.clientY - ob.top - 30)) + "px";
+  };
+  el.onmouseleave = () => { tip.hidden = true; xh.setAttribute("visibility", "hidden"); };
+}
+function miniSpark(vals) {
+  const max = Math.max(...vals, 1), w = 120, h = 28;
+  const pts = vals.map((v, i) => `${(i / Math.max(1, vals.length - 1) * w).toFixed(1)},${(h - 2 - (v / max) * (h - 4)).toFixed(1)}`);
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${pts.join(" ")}"/></svg>`;
+}
+
+views.live = {
+  fast: true,
+  shell: () => state.param ? `
+    <a class="back" href="#live">← All devices</a>
+    <div class="page-head"><div><h1 id="lv-title">…</h1><div class="muted">Updates every 2 seconds. Inferred from the shape of the traffic - encrypted content is never read.</div></div>
+      <div class="actions"><a class="btn" id="lv-dev-link">Device page</a></div></div>
+    <div class="now"><span class="pulse"></span><div class="headline" id="lv-now">…<div class="why"></div></div><div id="lv-conf"></div></div>
+    <div class="panel"><div class="panel-head"><h2>What it's doing, last 5 minutes</h2><div class="tools legend-live" id="lv-legend"></div></div>
+      <div class="chart-wrap" id="lv-chart"></div></div>
+    <div class="panel"><div class="panel-head"><h2>Connections right now</h2></div><div id="lv-flows"></div></div>` : `
+    <div class="page-head"><div><h1>Live</h1><div class="muted">What each device is doing right now, judged from its traffic.</div></div></div>
+    <div class="live-grid" id="lv-grid"></div>`,
+  async refresh() {
+    if (!state.param) {
+      const d = await api("/api/live");
+      $("#lv-grid").innerHTML = !d.monitor ? `<div class="empty">Traffic accounting is off (see System).</div>` :
+        d.devices.length ? d.devices.map(x => `<a class="card live-card" href="#live/${encodeURIComponent(x.device_id)}">
+          <div class="card-head"><div class="name">${esc(x.label)}</div>${x.activity !== "idle" ? actBadge(x.activity, x.activity) : `<span class="badge">idle</span>`}</div>
+          <div class="hl">${esc(x.headline)}</div>
+          <div class="row" style="justify-content:space-between"><span class="small muted">${fmtRate(x.rate)} · ${esc(x.group)}</span>${miniSpark(x.spark)}</div></a>`).join("")
+        : `<div class="empty">No device is using the internet right now.</div>`;
+      return;
+    }
+    const d = await api(`/api/live/${encodeURIComponent(state.param)}`);
+    $("#lv-title").textContent = d.label || state.param;
+    $("#lv-dev-link").href = `#device/${encodeURIComponent(state.param)}`;
+    const n = d.now || { headline: "Idle", why: [] };
+    $("#lv-now").innerHTML = `${esc(n.headline)}<div class="why">${esc((n.why || []).join(" · "))}</div>`;
+    $("#lv-conf").innerHTML = n.confidence ? `<span class="conf ${n.confidence >= 80 ? "" : ""}" title="How sure the traffic analysis is"><span class="bar"><i style="width:${n.confidence}%"></i></span>${n.confidence}% sure</span>` : "";
+    const last = d.series.slice(-3);
+    const cur = c => last.reduce((s, p) => s + (Number(p[c]) || 0), 0) / Math.max(1, last.length);
+    $("#lv-legend").innerHTML = ACTS.filter(c => d.series.some(p => p[c])).map(c =>
+      `<span><span class="sw" style="background:var(--act-${c})"></span>${esc(d.classes[c])} <b>${fmtRate(cur(c))}</b></span>`).join("") || "<span>idle</span>";
+    liveArea($("#lv-chart"), d.series, d.classes, d.poll || 2);
+    $("#lv-flows").innerHTML = d.flows.length ? `<div class="scroll tall"><table><thead><tr><th>Site / service</th><th>Doing</th>
+      <th class="right">↓ now</th><th class="right">↑ now</th><th class="right">Duration</th><th class="right">Total ↓</th><th>Destination</th></tr></thead><tbody>
+      ${d.flows.map(f => `<tr><td class="trunc" title="${esc(f.domain || "")}">${esc(f.domain || f.service)}</td>
+        <td title="${esc((f.activity_why || []).join("; "))}">${f.activity !== "idle" ? actBadge(f.activity, f.activity_label) : `<span class="faint small">idle</span>`}
+          ${f.download === "held" ? ` <span class="badge bad">held</span>` : ""}</td>
+        <td class="right nowrap">${fmtRate(f.rate_down)}</td><td class="right nowrap">${fmtRate(f.rate_up)}</td>
+        <td class="right nowrap">${fmtDur(f.duration)}</td><td class="right nowrap">${fmtBytes(f.bytes_down)}</td>
+        <td class="mono small nowrap">${esc(f.dst_ip)}:${esc(f.dst_port)} <span class="faint">${esc(f.proto)}</span></td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="empty">No connections right now.</div>`;
+  },
+};
+
+views.downloads = {
+  shell: () => `
+    <div class="page-head"><div><h1>Downloads</h1><div class="muted" id="dl-sub"></div></div></div>
+    <div class="page-head" style="margin:4px 0 10px"><h2>Waiting for your decision</h2></div>
+    <div class="cards" id="dl-pending"></div>
+    <div class="panel" style="margin-top:18px"><div class="panel-head"><h2>All downloads</h2></div><div class="scroll" id="dl-all"></div></div>`,
+  async refresh() {
+    const d = await api("/api/downloads?limit=300");
+    $("#dl-sub").textContent = `Policy: ${d.policy.replace("_", " ")}. Files are judged by where they come from and who's downloading - ` +
+      `encrypted downloads can't be opened. ` + (d.inline ? "" : "Monitor mode: nothing is actually stopped.");
+    $("#dl-pending").innerHTML = d.pending.length ? d.pending.map(x => `
+      <div class="card dl-card">
+        <div class="card-head"><div style="min-width:0"><div class="site">${esc(x.filename || x.site)}</div>
+          <div class="small muted">${x.filename ? esc(x.site) + " · " : ""}${deviceLink(x.device_id, x.device)} · ${ago(x.ts)}</div></div>
+          <span class="score-pill" title="Suspicion score">${x.score}/100</span></div>
+        <div class="small" style="margin-top:8px">${x.bytes_seen ? `${fmtBytes(x.bytes_seen)} received before it was stopped` : "stopped before it started"}</div>
+        <ul>${x.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
+        <div class="row" style="margin-top:12px"><button class="primary" data-dl="${x.id}" data-do="approve" title="Unblock this site for this device; the download can be retried">Approve</button>
+          <button class="danger" data-dl="${x.id}" data-do="deny" title="Keep this site blocked for this device">Deny</button></div>
+      </div>`).join("") : `<div class="empty">Nothing waiting. 👍</div>`;
+    const st = { pending: "warn", approved: "ok", allowed: "", denied: "bad" };
+    $("#dl-all").innerHTML = d.downloads.length ? `<table><thead><tr><th>When</th><th>Device</th><th>From</th><th>File</th>
+      <th class="right">Seen</th><th class="right">Suspicion</th><th>Status</th></tr></thead><tbody>
+      ${d.downloads.map(x => `<tr><td class="small nowrap muted">${new Date(x.ts * 1000).toLocaleString()}</td>
+        <td class="nowrap">${deviceLink(x.device_id, x.device)}</td><td class="mono small">${esc(x.site)}</td>
+        <td class="small">${esc(x.filename || "")}</td><td class="right nowrap">${x.bytes_seen ? fmtBytes(x.bytes_seen) : ""}</td>
+        <td class="right" title="${esc(x.reasons.join("\n"))}">${x.score}</td>
+        <td><span class="badge ${st[x.status] || ""}" title="${esc(x.note || "")}">${esc(x.status)}</span></td></tr>`).join("")}
+      </tbody></table>` : `<div class="empty">No downloads noticed yet.</div>`;
+  },
+};
 const STATUS = {
   tampering: ["critical", "!", "Tampering"], persistent: ["serious", "!", "Persistent"],
   curious: ["warning", "?", "Curious"], clean: ["good", "✓", "Clean"],
@@ -243,8 +382,8 @@ function stackedBars(el, h, catLabels) {
       `<div class="row" style="margin-top:4px"><span class="muted">Total</span><b>${totals[i]}</b></div>`;
     tip.hidden = false;
     const box = el.getBoundingClientRect();
-    tip.style.left = Math.min(box.width - 170, e.clientX - box.left + 12) + "px";
-    tip.style.top = Math.max(0, e.clientY - box.top - 20) + "px";
+    tip.style.left = Math.min(box.width - tip.offsetWidth - 4, e.clientX - box.left + 12) + "px";
+    tip.style.top = Math.max(0, Math.min(box.height - tip.offsetHeight - 4, e.clientY - box.top - 20)) + "px";
   };
   el.onmouseleave = () => { tip.hidden = true; };
 }
@@ -357,6 +496,9 @@ views.device = {
       <div class="actions" id="dv-actions"></div>
     </div>
     <div class="tiles" id="dv-tiles"></div>
+    <div class="panel"><div class="panel-head"><h2>Today's activity</h2><div class="tools"><a id="dv-live" class="btn">Watch live</a></div></div>
+      <div class="panel-body"><div class="timeline" id="dv-timeline"></div><div class="timeline-axis" id="dv-axis"></div>
+      <div class="legend-live" id="dv-tl-legend" style="margin-top:10px"></div></div></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h2>Today by service</h2></div><div class="panel-body" id="dv-services"></div></div>
       <div class="panel"><div class="panel-head"><h2>Last 7 days</h2></div><div class="panel-body" id="dv-week"></div></div>
@@ -389,6 +531,14 @@ views.device = {
       [x.blocked, "Blocked today"],
       [x.paused ? "Paused" : x.filtered ? "Filtered" : "Unfiltered", x.paused ? x.paused_reason : "Group: " + x.group, x.paused ? "bad" : ""],
     ].map(([n, l, c]) => `<div class="tile ${c || ""}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("");
+    $("#dv-live").href = `#live/${encodeURIComponent(id)}`;
+    const t0 = d.midnight, t1 = Date.now() / 1000, span = Math.max(3600, t1 - t0);
+    $("#dv-timeline").innerHTML = d.timeline.map(t => `<span title="${esc(t.headline)} (${clock(t.start).slice(0, 5)}–${clock(t.end).slice(0, 5)})"
+      style="left:${(100 * (t.start - t0) / span).toFixed(2)}%;width:${(100 * (t.end - t.start) / span).toFixed(2)}%;background:var(--act-${esc(t.activity)})"></span>`).join("");
+    $("#dv-axis").innerHTML = [0, 0.25, 0.5, 0.75, 1].map(f => `<span>${new Date((t0 + f * span) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`).join("");
+    const used = [...new Set(d.timeline.map(t => t.activity))];
+    $("#dv-tl-legend").innerHTML = used.length ? used.map(c => `<span><span class="sw" style="background:var(--act-${esc(c)})"></span>${esc(d.timeline.find(t => t.activity === c).label)}
+      <b>${fmtMins(d.timeline.filter(t => t.activity === c).reduce((s, t) => s + (t.end - t.start) / 60, 0))}</b></span>`).join("") : `<span>No activity recorded today.</span>`;
     $("#dv-services").innerHTML = bars(d.services, "minutes", fmtMins, r => fmtBytes(r.bytes_down + r.bytes_up));
     $("#dv-week").innerHTML = bars(d.week, "minutes", fmtMins, r => fmtBytes(r.bytes_down + r.bytes_up));
     $("#dv-flows").innerHTML = flowTable(d.flows, false);
@@ -565,6 +715,8 @@ async function render() {
   state.view = v; state.param = rest.length ? decodeURIComponent(rest.join("/")) : null;
   $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.v === (v === "device" ? "devices" : v)));
   $("#view").innerHTML = views[v].shell();
+  clearInterval(state.timer);
+  state.timer = setInterval(() => { if (!document.hidden) refresh(); }, views[v].fast ? 2000 : 5000);
   try {
     if (views[v].init) await views[v].init();
     await views[v].refresh();
@@ -577,6 +729,8 @@ async function refresh() {
     const { alerts } = await api("/api/alerts?limit=200&unacked=true");
     const n = alerts.filter(a => a.severity !== "info").length;
     const c = $("#alert-count"); c.hidden = !n; c.textContent = n;
+    const dl = await api("/api/downloads?limit=1");
+    const dc = $("#dl-count"); dc.hidden = !dl.pending.length; dc.textContent = dl.pending.length;
   } catch (_) { /* shown elsewhere */ }
 }
 
@@ -594,6 +748,10 @@ document.addEventListener("click", e => {
   else if (b.dataset.review) act(async () => {
     const r = await post(`/api/alerts/${b.dataset.review}/review`, { verdict: b.dataset.verdict });
     toast(b.dataset.verdict === "tp" ? "Confirmed - similar alerts will score higher" : `Noted: ${r.note}`, 3500);
+  });
+  else if (b.dataset.dl) act(async () => {
+    const r = await post(`/api/downloads/${b.dataset.dl}/${b.dataset.do}`);
+    toast(r.note, 3500);
   });
   else if (b.dataset.trust) act(() => post(`/api/devices/${encodeURIComponent(b.dataset.trust)}/trust`), "Trusted again");
   else if (b.dataset.del) act(() => del(b.dataset.del), "Removed");
@@ -648,7 +806,5 @@ async function start() {
   mb.textContent = sess.mode === "gateway" ? "Gateway mode" : "Monitor mode";
   mb.className = "badge " + (sess.mode === "gateway" ? "ok" : "info");
   await render();
-  clearInterval(state.timer);
-  state.timer = setInterval(() => { if (!document.hidden) refresh(); }, 5000);
 }
 start();

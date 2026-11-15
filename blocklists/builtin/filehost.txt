@@ -1,0 +1,47 @@
+# File lockers, anonymous upload sites and APK / "free software" download portals.
+# Not blocked by default - used by the download guard to judge where a download
+# comes from. The downloaded Hagezi anti-piracy list adds tens of thousands more.
+
+# File lockers / anonymous sharing
+mega.nz
+mega.io
+mediafire.com
+gofile.io
+pixeldrain.com
+1fichier.com
+rapidgator.net
+nitroflare.com
+turbobit.net
+katfile.com
+krakenfiles.com
+anonfiles.com
+bayfiles.com
+sendspace.com
+filefactory.com
+uptobox.com
+workupload.com
+send.cm
+buzzheavier.com
+qiwi.gg
+
+# APK / modded-app portals (installing apps outside the app store)
+apkpure.com
+apkpure.net
+apkmirror.com
+apkcombo.com
+uptodown.com
+happymod.com
+an1.com
+apkdone.com
+modyolo.com
+liteapks.com
+
+# "Free download" portals and cracked software / game sites
+softonic.com
+filehippo.com
+getintopc.com
+igg-games.com
+steamunlocked.net
+oceanofgames.com
+skidrowreloaded.com
+crackingpatching.com

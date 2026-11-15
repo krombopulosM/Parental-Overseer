@@ -53,6 +53,15 @@ class Guardian:
         if backend is not None:
             from .flows.monitor import FlowMonitor
             self.monitor = FlowMonitor(cfg, self.db, self.policy, self.dnscache, self.labels, backend)
+        from .downloads import DownloadGuard
+        kill = None
+        if self.gateway is not None:
+            from .gateway.system import kill_flow
+            kill = kill_flow
+        self.downloads = DownloadGuard(cfg, self.db, self.lists, self.alerts, kill_flow=kill)
+        self.inspector.downloads = self.downloads
+        if self.monitor is not None:
+            self.monitor.downloads = self.downloads
         self.detector = None
         if self.monitor is not None and cfg["detector"].get("enabled", True):
             self.detector = Detector(cfg, self.db, self.monitor, self.stats, self.lists,

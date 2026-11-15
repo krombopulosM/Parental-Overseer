@@ -26,7 +26,7 @@ NAMESPACES = ["pg-inet", "pg-gw", "pg-kid", "pg-kid2", "pg-parent", "pg-console"
 LAN = [("pg-kid", "10.50.0.10", "02:00:00:00:00:10"), ("pg-kid2", "10.50.0.11", "02:00:00:00:00:11"),
        ("pg-parent", "10.50.0.20", "02:00:00:00:00:20"), ("pg-console", "10.50.0.30", "02:00:00:00:00:30")]
 INET_IPS = ["198.51.100.10", "198.51.100.53", "198.51.100.66", "198.51.100.77", "198.51.100.78",
-            "198.51.100.79", "198.51.100.80", "9.9.9.9", "192.168.1.1"]
+            "198.51.100.79", "198.51.100.80", "198.51.100.81", "198.51.100.82", "9.9.9.9", "192.168.1.1"]
 results: list[dict] = []
 procs: list[subprocess.Popen] = []
 
@@ -88,6 +88,7 @@ def write_config():
         "gambling": {"files": []},
         "bypass": {"files": [f"{b}/vpn.txt", f"{b}/doh.txt", f"{b}/bypass.txt"]},
         "torrent": {"files": [f"{b}/torrent.txt"]},
+        "filehost": {"files": [f"{b}/filehost.txt"]},
     }
     cfg["ip_lists"] = {"vpn": {"files": [f"{b}/vpn-ips.txt", f"{W}/vpn-test.txt"]},
                        "doh": {"files": [f"{b}/doh-ips.txt"]}}
@@ -95,6 +96,7 @@ def write_config():
     cfg["detector"].update(interval=2, min_duration=4, min_bytes=2_000_000, window=30,
                            silence_min_bytes=1_000_000, learning_days=0)
     cfg["flows"]["poll_interval"] = 1
+    cfg["downloads"].update(min_bytes=3_000_000)
     cfg["gateway"].update(wan_interface="wan0", lan_interfaces=["lan0"], lan_ip="10.50.0.1",
                           lan_subnets=["10.50.0.0/24"], dhcp_leases=None)
     with open(f"{W}/config.yaml", "w") as fh:
@@ -309,6 +311,56 @@ def main():
 
         api("post", f"/api/devices/{kid}/pause", {"minutes": 0})
         time.sleep(1)
+
+        # ---- Activity analysis: a game with YouTube in the background
+        sec = "Live activity analysis"
+        play = subprocess.Popen(["ip", "netns", "exec", "pg-console", PY, f"{HERE}/client.py", "console_play"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(14)
+        lv = api("get", f"/api/live/{console}")
+        now = lv["now"] or {}
+        record(sec, "console: 'playing a game with YouTube in the background'",
+               now.get("activity") == "gaming" and "video" in now.get("background", []) and
+               "YouTube" in now.get("headline", ""), now.get("headline"))
+        record(sec, "live series by activity (gaming + video both present)",
+               any(p.get("gaming") for p in lv["series"]) and any(p.get("video") for p in lv["series"]),
+               f"{len(lv['series'])} points")
+        game_flow = [f for f in lv["flows"] if f["activity"] == "gaming"]
+        record(sec, "the game connection itself is classified as gaming", bool(game_flow),
+               [(f["dst_ip"], f["dst_port"], f["activity"]) for f in lv["flows"]][:5])
+        overview = api("get", "/api/live")
+        record(sec, "Live overview lists the console with its headline",
+               any(d["device_id"] == console and "game" in d["headline"] for d in overview["devices"]),
+               [(d["label"], d["headline"]) for d in overview["devices"]])
+        play.wait(timeout=60)
+        time.sleep(2)
+        tl = api("get", f"/api/devices/{console}")["timeline"]
+        record(sec, "today's timeline records the gaming session", any(t["activity"] == "gaming" for t in tl),
+               [(t["activity"], t["headline"]) for t in tl])
+
+        # ---- Download guard
+        sec = "Download guard"
+        run_suite("pg-kid", "kid_download", sec)
+        dls = api("get", "/api/downloads")
+        pend = [d for d in dls["pending"] if d["site"] == "mediafire.com"]
+        record(sec, "held download waiting for review with a suspicion score",
+               bool(pend) and pend[0]["score"] >= 50, pend[0]["reasons"] if pend else dls["pending"])
+        if pend:
+            r = api("post", f"/api/downloads/{pend[0]['id']}/approve")
+            record(sec, "parent approves", r["status"] == 200, r["body"].get("note"))
+            time.sleep(0.5)
+            run_suite("pg-kid", "kid_download_retry", sec)
+        run_suite("pg-kid", "kid_http_exe", sec)
+        dls = api("get", "/api/downloads")
+        exe = [d for d in dls["pending"] if d["filename"] == "FreeRobux-Setup.exe"]
+        record(sec, "the .exe is waiting for review, file name shown", bool(exe), exe[:1])
+        if exe:
+            r = api("post", f"/api/downloads/{exe[0]['id']}/deny")
+            record(sec, "parent denies", r["status"] == 200, r["body"].get("note"))
+            run_suite("pg-kid", "kid_after_deny", sec)
+        al = [a for a in api("get", "/api/alerts?limit=1000")["alerts"] if a["kind"] == "download_held"]
+        record(sec, "held downloads also raise alerts with confidence",
+               len(al) >= 2 and all(a["confidence"] for a in al), [(a["domain"], a["confidence"]) for a in al])
 
         # ---- Tamper resistance: kill the inspector
         gw.terminate()

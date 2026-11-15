@@ -18,6 +18,9 @@ traffic passes through it. It:
   deliberate, and learns from your reviews
 - shows a **Health page**: is the protection working, and who tried what, how
   often
+- shows **live what each device is doing**, e.g. *"Likely playing an online
+  game with YouTube in the background"*, with a live graph and a daily timeline
+- **holds suspicious downloads** for you to approve or deny
 - is controlled from a **browser dashboard** with a login
 
 It works at the level of **site names** (`youtube.com`), not individual pages,
@@ -73,6 +76,74 @@ ProtonVPN Stealth *is* real TLS, but it connects to server IPs the Pi's DNS neve
 Kids' devices already get no UDP and only real web traffic on 80/443, so
 torrents are blocked several times over. The `consoles` group (UDP allowed) still
 has torrent signatures blocked.
+
+## Live activity analysis
+
+In gateway mode every packet already passes through the Pi. The inspector
+reads each connection's handshake, and the kernel counts every packet and byte.
+Sending every packet through the app as well would add lag to games and calls
+without revealing anything new, because the content is encrypted. What *does*
+reveal what someone is doing is the **shape** of their traffic:
+
+| Activity | How it looks |
+|---|---|
+| Gaming | small packets, a steady 10–60 a second **both ways**, low bandwidth, no pauses |
+| Video | big downstream bursts with pauses in between, or a known video service |
+| Call | steady, roughly symmetrical, medium bandwidth |
+| Downloading | one-way, sustained, high bandwidth, no pauses |
+| Music / social / browsing | known services, or short small connections to many sites |
+
+Every 2 seconds each connection is classified from its shape (and its service
+name when known). The connections are then combined into one sentence per
+device: the interactive activity in the foreground, video or music playing
+alongside it in the background. For example:
+
+- *"Likely playing Roblox with YouTube in the background"*
+- *"Likely watching Netflix (also on Instagram)"*
+- *"Likely downloading a file from mega.nz"*
+
+Each sentence comes with a confidence and the reasoning.
+
+- **Live** shows every device at a glance. Each device's page has a graph of
+  the last 5 minutes by activity (hover for details) and its connections right
+  now.
+- **Device pages** show a timeline of today's activity.
+
+## Download guard
+
+Downloads are noticed two ways:
+- **HTTPS (almost everything):** a connection turns into a sustained one-way
+  transfer. The file is encrypted, so it's judged by **where it comes from and
+  who's downloading it**, never its contents.
+- **Plain HTTP:** the file name is readable, so a risky file (`.exe`, `.apk`,
+  `.zip`, `.dmg`…) is stopped **before the first byte** arrives.
+
+Each download gets a suspicion score, with every point explained:
+
+| Signal | Points |
+|---|---|
+| A file-sharing, APK or cracked-software site (built-in list + Hagezi anti-piracy) | +55 |
+| A torrent site | +60 |
+| A risky file type (plain HTTP only) | +40 |
+| No site name, just an IP address | +30 |
+| Site first seen on your network today | +20 |
+| Unencrypted download | +15 |
+| Device tried to get around the filter in the last 24 h | +10 |
+| Site the gateway doesn't recognise | +10 |
+| Known app store / game platform / OS update source | −60 |
+
+At or above 50 (`downloads.suspicious_score`), the connection is cut and that
+site is **held for that device** until you decide on the **Downloads** page:
+
+- **Approve:** the site is unblocked for that device and the download can be
+  retried. Browsers can usually resume.
+- **Deny:** the site stays blocked for that device.
+
+Holds and approvals survive restarts.
+
+The policy can be set globally or per group: `review_suspicious` (default),
+`review_all` (every download from an untrusted site), `block_suspicious` (no
+review, just stop it) or `off`.
 
 ## Defences against countermeasures
 
@@ -265,7 +336,7 @@ Categories, lists, detector thresholds and schedules are all in
 ## Tests
 
 ```bash
-pytest -q                               # 62 unit tests (parsers, inspector, torrents, LAN watch, confidence...)
+pytest -q                               # 79 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
@@ -275,8 +346,12 @@ namespaces: two kids' devices, a parent's laptop, a console, the real gateway
 disguised tunnels and an ISP router. It then attempts every bypass above,
 plus torrents and real attacks on the gateway (ARP spoofing, rogue DHCP, a
 cloned parent MAC, port scans, password guessing, a hidden NAT, a simulated
-power cut). **105 checks pass.** It also kills the service and confirms kids'
-access fails closed while the parent is unaffected. (The IPv6 router check is
+power cut). It also checks the activity analysis: a console playing a game with
+YouTube in the background must be described exactly that way. And it checks the
+download guard end to end: a file-sharing download cut mid-transfer, retries
+blocked until approved, then allowed; a plain-HTTP `.exe` stopped before it
+starts, then denied. **120 checks pass.** Finally it kills the service and
+confirms kids' access fails closed while the parent is unaffected. (The IPv6 router check is
 skipped on kernels booted without IPv6.)
 
 ## Layout
@@ -294,6 +369,8 @@ guardian/
   detector.py          behavioural VPN/tunnel detection
   lanwatch.py          passive LAN defences (ARP/DHCP/RA spoofing, MAC cloning, torrent discovery)
   confidence.py        "how deliberate was this?" scoring + review calibration
+  activity.py          traffic-shape classifier: gaming / video / call / download / ...
+  downloads.py         download guard: detect, score, hold for review
   gateway/             nftables ruleset, NFQUEUE runner
   lists.py             blocklist + VPN-server list downloads
   webapp.py, static/   dashboard

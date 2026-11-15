@@ -23,6 +23,7 @@ CATEGORIES = {
     "disguise": "Disguised traffic",
     "torrent": "Torrents",
     "tamper": "Tampering with the gateway",
+    "download": "Suspicious downloads",
     "info": "Info",
 }
 
@@ -62,6 +63,7 @@ KIND_META: dict[str, tuple] = {
     "dashboard_bruteforce": ("tamper", 75, "none", "a parent mistyping the password"),
     "hidden_router":      ("tamper", 45, "none", "a virtual machine or a phone hotspot"),
     "gateway_offline":    ("tamper", 30, "none", "a power cut or a planned reboot"),
+    "download_held":      ("download", 50, "none", "a legitimate file from a site the gateway doesn't know"),
     "new_device":         ("info", None, "none", ""),
 }
 

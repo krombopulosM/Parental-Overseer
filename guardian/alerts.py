@@ -43,6 +43,7 @@ KINDS = {
     "dashboard_bruteforce": ("Repeated wrong dashboard passwords", "high"),
     "hidden_router":      ("Other devices hidden behind this one", "medium"),
     "gateway_offline":    ("Gateway was offline", "medium"),
+    "download_held":      ("Suspicious download held for review", "medium"),
     "new_device":         ("New device joined the network", "info"),
 }
 
