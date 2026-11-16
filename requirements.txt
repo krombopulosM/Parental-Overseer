@@ -2,5 +2,6 @@ dnslib>=0.9.24
 fastapi>=0.110
 uvicorn>=0.29
 pyyaml>=6.0
+qrcode>=7.4                # QR code for the dashboard address (pure Python)
 # packet capture for monitor mode + the replay tool (Windows also needs Npcap: https://npcap.com)
 scapy>=2.5

@@ -183,6 +183,12 @@ const WZ_VIEWS = {
           <p class="d">${gw ? "This machine is the router: every device's traffic passes through it, so filtering, the anti-bypass checks and blocking all happen in the network itself. Nothing on the children's devices can switch it off."
             : "This machine filters the devices that use it for DNS and watches the traffic it can see. It's ideal for trying things out and debugging - for real protection run it on the Raspberry Pi in gateway mode."}</p></div>
       </div>
+      <h2>The dashboard's address</h2>
+      <label class="wz-name" for="wz-local-name"><span class="pre">http://</span><input id="wz-local-name" value="${esc(wz.values.local_name || "family")}"
+        maxlength="32" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" inputmode="url" aria-describedby="wz-name-help"><span class="post">.local${esc(wzPort())}</span></label>
+      <p class="muted small" id="wz-name-help">What everyone types into a browser at home to open this dashboard - no IP address to look up.
+        If a device can't open it, <b class="mono" id="wz-name-fallback">http://${esc(wz.values.local_name || "family")}.home.arpa${esc(wzPort())}</b> always works.
+        <span class="error" id="wz-name-err"></span></p>
       <h2>Checklist</h2>
       <ul class="wz-checks">${checks}</ul>
       ${gw ? `<h2>Network ports</h2>${ifaces}
@@ -316,6 +322,7 @@ const WZ_VIEWS = {
     const named = Object.entries(wz.devices).filter(([id, s]) => s.name || s.group);
     const restart = wzRestartKeys();
     const rows = [
+      [S("run"), "Address", `http://${v.local_name || "family"}.local${wzPort()}`],
       [S("run"), "How it runs", d.mode === "gateway" ? "Gateway mode" : `Monitor mode · DNS port ${v.dns_port} · dashboard ${v.web_host === "0.0.0.0" ? "open to the network" : "this computer only"}`],
       [S("level"), "Level", wz.preset === "custom" ? "Custom" : d.presets[wz.preset].label],
       [S("tune"), "Adult content", `${lab("adult_mode", v.adult_mode)} · SafeSearch ${yes(v.safesearch)} · YouTube ${lab("youtube", v.youtube)} · family DNS ${yes(v.family_dns)} · unknown video: ${lab("unknown_video", v.unknown_video).toLowerCase()}`],
@@ -346,6 +353,14 @@ function wzRestartKeys() {
 
 const WZ_BIND = {
   run(body) {
+    const inp = $("#wz-local-name", body);
+    inp.oninput = () => {
+      const v = inp.value.trim().toLowerCase();
+      const ok = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(v);
+      $("#wz-name-err", body).textContent = ok ? "" : " Use letters, numbers and hyphens only (e.g. family, smith-home).";
+      inp.classList.toggle("invalid", !ok);
+      if (ok) { wz.values.local_name = v; $("#wz-name-fallback", body).textContent = `http://${v}.home.arpa${wzPort()}`; }
+    };
     wzBindChoices(body, "dns_port", v => { wz.values.dns_port = Number(v); });
     wzBindChoices(body, "web_host", v => { wz.values.web_host = v; });
   },
@@ -442,12 +457,17 @@ async function wzWaitForRestart() {
   }
 }
 
+function wzPort() {
+  return (wz.data && wz.data.address && (wz.data.address.primary.match(/:\d+$/) || [""])[0]) || "";
+}
+
 function wzDone(restarting) {
   const gw = wz.data.mode === "gateway";
   $("#wizard").innerHTML = `<div class="wz done"><div class="wz-body wz-done">
     ${restarting ? `<div class="spinner" aria-hidden="true"></div><h1>Restarting…</h1><p class="lead">Applying the new settings. This page reconnects by itself.</p>` : `
     <div class="wz-big">✓</div><h1>You're all set</h1>
     <p class="lead">Protection is running with your settings.</p>
+    <div id="wz-address" class="wz-address"></div>
     <div class="wz-list">
       ${!gw && wz.values.dns_port === 53 ? `<div><b>Point devices at this computer</b><span>Set a device's DNS server to this computer's address (or set it in your router's DHCP settings) to filter it.</span></div>` : ""}
       <div><b>Watch it live</b><span>The <a href="#live" data-wz-close>Live</a> page shows what each device is doing right now.</span></div>
@@ -459,5 +479,6 @@ function wzDone(restarting) {
   if (!restarting) {
     $("#wz-close").onclick = () => { location.hash = "#overview"; closeWizard(); };
     $$("[data-wz-close]").forEach(a => a.addEventListener("click", () => setTimeout(closeWizard, 0)));
+    api("/api/address").then(a => { $("#wz-address").innerHTML = addressCard(a, true); bindAddressCard($("#wz-address")); }).catch(() => { });
   }
 }

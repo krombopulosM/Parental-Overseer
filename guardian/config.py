@@ -24,7 +24,7 @@ DEFAULTS: dict = {
         "tunnel_detection": {"enabled": True, "window": 300, "unique_names": 120,
                              "min_label_len": 24, "block_hours": 24},
     },
-    "web": {"host": "127.0.0.1", "port": 8080},
+    "web": {"host": "127.0.0.1", "port": 8080, "local_name": "family"},
     "database": "guardian.db",
     "retention_days": 30,
     "groups": {

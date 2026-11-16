@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import json
 
-from . import protections
+from . import localname, protections
 from .alerts import KINDS
 from .auth import Auth
 from .activity import CLASSES
@@ -22,8 +22,12 @@ from .services import registrable_domain, service_label
 COOKIE = "pg_session"
 _DOMAIN_RE = re.compile(r"^[a-z0-9*_.-]+\.[a-z0-9-]+$")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-_PUBLIC = {"/", "/static/app.js", "/static/wizard.js", "/static/style.css", "/api/session", "/api/login",
-           "/api/setup"}
+_STATIC = {"app.js": None, "wizard.js": None, "style.css": None, "docs.html": None,
+           "manifest.webmanifest": "application/manifest+json", "icon-192.png": None, "icon-512.png": None,
+           "icon-maskable-512.png": None, "apple-touch-icon.png": None, "favicon.png": None}
+# Everything but the Guide loads before sign-in (the app shell, icons, the manifest).
+_PUBLIC = {"/", "/api/session", "/api/login", "/api/setup", "/apple-touch-icon.png", "/favicon.ico"} | \
+    {f"/static/{n}" for n in _STATIC if n != "docs.html"}
 
 
 def _midnight() -> float:
@@ -71,9 +75,20 @@ def create_app(g) -> FastAPI:
 
     @app.get("/static/{name}")
     def static_file(name: str):
-        if name not in ("app.js", "wizard.js", "style.css", "docs.html"):
+        if name not in _STATIC:
             raise HTTPException(404)
-        return FileResponse(os.path.join(static, name), headers={"Cache-Control": "no-store"})
+        cache = "max-age=86400" if name.endswith(".png") else "no-store"
+        return FileResponse(os.path.join(static, name), media_type=_STATIC[name],
+                            headers={"Cache-Control": cache})
+
+    @app.get("/apple-touch-icon.png")           # iOS asks for these at the site root
+    def apple_icon():
+        return static_file("apple-touch-icon.png")
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return FileResponse(os.path.join(static, "favicon.png"), media_type="image/png",
+                            headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/api/session")
     def session(req: Request):
@@ -764,6 +779,7 @@ def create_app(g) -> FastAPI:
             "bedtime": wizard_bedtime() or {"enabled": False, "start": "21:00", "end": "07:00",
                                             "days": "sun,mon,tue,wed,thu", "groups": ["kids"]},
             "environment": environment.detect(g.cfg, g),
+            "address": localname.addresses(g.cfg, client_ip(req)),
             "devices": devs,
             "this_device": here_id,
             "this_ip": client_ip(req),
@@ -811,6 +827,14 @@ def create_app(g) -> FastAPI:
         if body.get("finish", True):
             g.db.set_setting("setup_complete", str(time.time()))
         return {"ok": True, **result}
+
+    @app.get("/api/address")
+    def address(req: Request):
+        a = localname.addresses(g.cfg, client_ip(req))
+        a["qr_svg"] = localname.qr_svg(a["qr_url"])
+        a["mdns"] = g.mdns.status() if g.mdns is not None else None
+        a["mode"] = g.mode
+        return a
 
     @app.get("/api/protections")
     def get_protections():

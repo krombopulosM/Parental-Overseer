@@ -93,14 +93,31 @@ gateway, copying a parent's device identity, rogue network settings).</p>
 <p>On the Pi, from the project folder, run <code>sudo ./deploy/setup-pi.sh</code>. It lists the Pi's network ports and
 asks which one goes to the internet (your ISP router) and which to your home (the access point) - suggesting the
 likely answers. It then installs everything, gives the home side the address <code>192.168.50.1</code>, hands out
-network settings to devices, starts the service and asks you for a dashboard password. The dashboard is then at
-<code>http://192.168.50.1:8080</code>. Running it again later is safe: it updates the program and lets you re-pick
-the ports, and keeps your password, history and settings.</p>
+network settings to devices, starts the service and asks you for a dashboard password. Running it again later is
+safe: it updates the program and lets you re-pick the ports, and keeps your password, history and settings.</p>
+<h3 id="address">Opening the dashboard: http://family.local</h3>
+<p>Nobody needs to know the Pi's address. From any phone, tablet or computer at home, type
+<b><code>family.local</code></b> into the browser. The name is yours to choose in the setup wizard (for example
+<code>smiths.local</code>).</p>
+<ul>
+  <li><b>If a device can't open <code>family.local</code></b> (a few older Android phones), use
+    <code>family.home.arpa</code> - it always works at home, because every device asks the gateway for addresses.
+    The Pi's own address, <code>192.168.50.1</code>, works too.</li>
+  <li><b>No port number needed</b> - the Pi answers on the normal web port.</li>
+  <li><b>On a phone:</b> System → Dashboard address shows a QR code - point the camera at it. Then use your browser's
+    <i>Add to Home Screen</i> and the dashboard opens like an app, with its own icon.</li>
+  <li><b>Children's devices</b> can look the name up, but only adults' devices can open the dashboard, and it always
+    asks for the password.</li>
+</ul>
+<p class="small">How it works: the gateway's DNS answers the name with its own address, and on the Pi the name is also
+announced on the home network with mDNS (Avahi) - that's how iPhones, Macs and Windows find <code>.local</code>
+names. <code>.home.arpa</code> is the ending reserved for home networks, so browsers treat it as an address rather
+than a search.</p>
 <h3>The setup wizard</h3>
 <p>The first time you sign in to the dashboard, a short wizard walks you through the rest. Each step explains what
 its choices do:</p>
 <ol>
-  <li><b>How it runs</b> - checks the machine is ready: the internet and home ports, the firewall, administrator
+  <li><b>How it runs</b> - the dashboard's name (what everyone types: <code>family.local</code>), and checks the machine is ready: the internet and home ports, the firewall, administrator
     rights, blocklists. On a PC it also asks which port DNS listens on and whether the dashboard can be opened from
     other devices.</li>
   <li><b>Protection level</b> - <b>Strict</b> (recommended: suspicious downloads, unknown video and heavy traffic

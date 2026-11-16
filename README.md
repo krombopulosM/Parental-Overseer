@@ -291,7 +291,8 @@ python run.py
 ```
 
 Open **http://127.0.0.1:8080** and choose a password; first-time setup is only
-allowed from the machine itself. The [setup wizard](#first-time-setup-wizard)
+allowed from the machine itself. (Devices that use the PC for DNS can also reach
+it as `http://family.home.arpa:8080`.) The [setup wizard](#first-time-setup-wizard)
 then opens. For traffic accounting on Windows, install
 [Npcap](https://npcap.com) and run the terminal as administrator.
 
@@ -347,9 +348,28 @@ The script:
 - installs everything;
 - gives the LAN port `192.168.50.1` and runs DHCP on it;
 - creates a `parental-gateway` systemd service;
+- announces the dashboard's name on the home network (Avahi / mDNS);
 - asks you for the dashboard password.
 
-The dashboard is at **http://192.168.50.1:8080**.
+Open the dashboard from any device at home: **http://family.local**
+
+## The dashboard address
+
+Nobody needs to find the Pi's IP address. The dashboard answers to a name,
+`family` by default (change it in the setup wizard):
+
+| Address | How it's found | Works on |
+|---|---|---|
+| `family.local` | announced by the Pi with mDNS (Avahi), and answered by the gateway's DNS | iPhone/iPad, Mac, Windows, Linux, most Android |
+| `family.home.arpa` | answered by the gateway's DNS - every device at home uses it | everything (the ending reserved for home networks, so browsers open it rather than search) |
+| `family.home`, `family.lan`, `192.168.50.1` | aliases / the address | everything |
+
+- Port 80 is redirected to the dashboard, so there's no `:8080` to remember;
+  `https://` is refused immediately so browsers fall back to `http://` without waiting.
+- **System → Dashboard address** shows the address with a QR code; on a phone,
+  *Add to Home Screen* installs it with its own icon.
+- The name is answered before any filtering, so a new or paused device can still
+  find the dashboard - but only adults' devices can open it, and it needs the password.
 
 Then:
 
@@ -369,7 +389,7 @@ reopens it):
 
 | Step | What it sets |
 |---|---|
-| How it runs | Detects the platform, admin rights, interfaces, firewall, capture support and blocklists, and shows a pass/warn checklist. On a PC: DNS port (53 for real devices, 5353 for testing) and who can open the dashboard. On the Pi: the detected ports plus a house checklist. |
+| How it runs | The dashboard's name (`family` → http://family.local). Detects the platform, admin rights, interfaces, firewall, capture support and blocklists, and shows a pass/warn checklist. On a PC: DNS port (53 for real devices, 5353 for testing) and who can open the dashboard. On the Pi: the detected ports plus a house checklist. |
 | Protection level | **Strict** (recommended), **Balanced** or **Light** presets. |
 | Fine-tune | Adult-content mode, SafeSearch, YouTube Restricted Mode, family DNS, unknown video, downloads, unknown destinations, auto-pause after bypass attempts / network attacks. |
 | What to block | Categories for the kids, consoles and new-device groups. |
@@ -398,6 +418,9 @@ would cut the dashboard off, so that stays in `setup-pi.sh`.
     sites blocked, a 7-day trend, its most certain alert, and a status of
     **Clean / Curious / Persistent / Tampering**;
   - your review history.
+- **On a phone:** a bottom tab bar (Home, Live, Devices, Alerts, More), device
+  cards with one-tap pause, alert actions under the text, 16px inputs (no zooming
+  in on iPhone), and *Add to Home Screen* support with an app icon.
 - **Devices:** set groups, rename devices, see online time / data / blocks,
   pause a device.
 - **Device page:** time and data per service (today and last 7 days), live
@@ -437,7 +460,7 @@ Categories, lists, detector thresholds and schedules are all in
 ## Tests
 
 ```bash
-pytest -q                               # 155 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
+pytest -q                               # 169 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
@@ -458,7 +481,7 @@ unlisted Tor relays, and a CDN-style tunnel held as an unknown destination.
 It also drives the setup wizard: interfaces detected, a category change taking
 effect live for the kid, and a real self-restart that must come back as the
 same process with the inspector running and no stale fail-open rule.
-It switches protections per group on the live gateway (Tor off for the console only, "allow everything" still blocking VPN ports until VPNs are switched off). **185 checks pass.** Finally it kills the service and
+It switches protections per group on the live gateway (Tor off for the console only, "allow everything" still blocking VPN ports until VPNs are switched off). It also opens the dashboard by name over port 80 (and checks a child can find the name but not open it). **193 checks pass.** Finally it kills the service and
 confirms kids' access fails closed while the parent is unaffected. (The IPv6 router check is
 skipped on kernels booted without IPv6.)
 

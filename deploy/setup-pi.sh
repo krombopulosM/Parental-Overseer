@@ -62,7 +62,7 @@ LAN_NET=$(python3 -c "import ipaddress; print(ipaddress.ip_interface('$LAN_IP/$L
 echo "==> Installing packages"
 apt-get update -q
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-venv python3-dev build-essential \
-  libnetfilter-queue-dev nftables conntrack dnsmasq tcpdump
+  libnetfilter-queue-dev nftables conntrack dnsmasq tcpdump avahi-daemon avahi-utils
 
 echo "==> Installing app to $APP_DIR"
 mkdir -p "$APP_DIR"
@@ -136,11 +136,34 @@ bind-interfaces
 dhcp-range=$DHCP_START,$DHCP_END,12h
 dhcp-option=option:router,$LAN_IP
 dhcp-option=option:dns-server,$LAN_IP
+# search domain: "family" alone finds family.home.arpa (the dashboard)
+dhcp-option=option:domain-name,home.arpa
+dhcp-option=option:domain-search,home.arpa
 dhcp-authoritative
 dhcp-leasefile=/var/lib/misc/dnsmasq.leases
 EOF
 systemctl enable -q dnsmasq
 systemctl restart dnsmasq
+
+echo "==> Announcing the dashboard name on the home network (mDNS)"
+# Only on the home side: nothing about this network is announced towards the ISP router.
+AVAHI_CONF=/etc/avahi/avahi-daemon.conf
+if [ -f "$AVAHI_CONF" ]; then
+  if grep -q "^#\?allow-interfaces=" "$AVAHI_CONF"; then
+    sed -i "s/^#\?allow-interfaces=.*/allow-interfaces=$LAN_IF/" "$AVAHI_CONF"
+  else
+    sed -i "/^\[server\]/a allow-interfaces=$LAN_IF" "$AVAHI_CONF"
+  fi
+fi
+systemctl enable -q avahi-daemon 2>/dev/null || true
+systemctl restart avahi-daemon 2>/dev/null || true
+DASH_NAME=$("$APP_DIR/.venv/bin/python" - "$APP_DIR" <<'PY' 2>/dev/null || echo family
+import sys; sys.path.insert(0, sys.argv[1])
+from guardian.config import load_config
+from guardian.localname import base_name
+print(base_name(load_config(sys.argv[1] + "/config.yaml")))
+PY
+)
 
 if ss -lunp 2>/dev/null | grep -q "systemd-resolve.*:53 "; then
   echo "==> Freeing port 53 from systemd-resolved's stub listener"
@@ -175,7 +198,12 @@ systemctl --no-pager --lines=8 status parental-gateway || true
 
 cat <<EOF
 
-Done. Dashboard: http://$LAN_IP:8080  (from a device plugged into the LAN side)
+Done. Open the dashboard from any device at home:
+
+    http://$DASH_NAME.local
+    (or http://$DASH_NAME.home.arpa, or http://$LAN_IP)
+
+The name can be changed in the dashboard's setup wizard.
 
 Finish the setup:
   1. Put your Wi-Fi access point in "access point / bridge" mode (no DHCP or NAT of its own)

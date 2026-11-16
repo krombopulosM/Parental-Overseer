@@ -88,6 +88,7 @@ _PATHS = {
     "dns_port": (("dns", "listen_port"), True),
     "web_host": (("web", "host"), True),
     "tamper_watch": (("tamper", "enabled"), True),
+    "local_name": (("web", "local_name"), False),
 }
 
 _CHOICES = {
@@ -165,6 +166,12 @@ def validate(values: dict, cfg: dict) -> dict:
             if port not in (53, 5353) and not 1024 < port < 65536:
                 raise ValueError("DNS port must be 53, 5353 or above 1024")
             out[key] = port
+        elif key == "local_name":
+            from .localname import valid_label
+            val = str(val).strip().lower()
+            if not valid_label(val):
+                raise ValueError("The dashboard name can use letters, numbers and hyphens (e.g. family, smith-home)")
+            out[key] = val
         elif key == "default_group":
             if val not in cfg["groups"]:
                 raise ValueError(f"unknown group {val}")

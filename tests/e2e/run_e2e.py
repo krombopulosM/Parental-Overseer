@@ -477,6 +477,38 @@ def main():
                [r for r in rules.splitlines() if "NFQUEUE" in r])
         run_suite("pg-kid", "kid_basic", sec + ": filtering works after the restart")
 
+        # ---- The dashboard's friendly address
+        sec = "Dashboard address"
+
+        def lookup(ns, name):
+            out = sh(nsx(ns, f"{PY} -c \"from dnslib import DNSRecord; "
+                             f"r=DNSRecord.parse(DNSRecord.question('{name}').send('10.50.0.1', 53, timeout=3)); "
+                             f"print(','.join(str(a.rdata) for a in r.rr) or r.header.rcode)\""), check=False)
+            return out.stdout.strip()
+        record(sec, "family.home.arpa resolves to the gateway for the parent", lookup("pg-parent", "family.home.arpa") == "10.50.0.1",
+               lookup("pg-parent", "family.home.arpa"))
+        record(sec, "family.local resolves too", lookup("pg-parent", "family.local") == "10.50.0.1")
+        record(sec, "a child's device can find the name", lookup("pg-kid", "family.home.arpa") == "10.50.0.1")
+        code = sh(nsx("pg-parent", "curl -s -o /dev/null -w %{http_code} --max-time 5 "
+                                   "--resolve family.home.arpa:80:10.50.0.1 http://family.home.arpa/api/session"),
+                  check=False).stdout
+        record(sec, "http://family.home.arpa opens the dashboard (port 80, no :8080)", code == "200", code)
+        code = sh(nsx("pg-kid", "curl -s -o /dev/null -w %{http_code} --max-time 4 "
+                                "--resolve family.home.arpa:80:10.50.0.1 http://family.home.arpa/"), check=False).stdout
+        record(sec, "...but not from a child's device", code != "200", code)
+        t0 = time.time()
+        out = sh(nsx("pg-parent", "curl -s -o /dev/null -w %{http_code} --max-time 5 "
+                                  "--resolve family.home.arpa:443:10.50.0.1 https://family.home.arpa/"), check=False)
+        record(sec, "https:// is refused at once, so browsers fall back to http quickly",
+               time.time() - t0 < 2 and out.stdout == "000", f"{time.time() - t0:.1f}s")
+        api("post", "/api/wizard/apply", {"values": {"local_name": "smiths"}, "finish": False})
+        record(sec, "renamed in the wizard: smiths.home.arpa works at once",
+               lookup("pg-parent", "smiths.home.arpa") == "10.50.0.1" and lookup("pg-parent", "family.home.arpa") != "10.50.0.1")
+        addr = api("get", "/api/address")
+        record(sec, "address panel shows the name and a QR code", addr["primary"] == "http://smiths.local"
+               and addr["qr_svg"].startswith("<svg"), addr["primary"])
+        api("post", "/api/wizard/apply", {"values": {"local_name": "family"}, "finish": False})
+
         # ---- Protection switches, per group (the console's group; the kids keep theirs)
         sec = "Protection switches"
 

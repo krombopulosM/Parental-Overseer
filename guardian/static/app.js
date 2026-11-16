@@ -111,7 +111,7 @@ function alertList(alerts, withActions) {
           ${a.category_label && a.category !== "info" ? ` · ${esc(a.category_label)}` : ""}
           ${a.review ? ` · <span class="reviewed">${a.review === "fp" ? "you marked: not a bypass" : "you confirmed it"}</span>` : ""}</div>
       </div>
-      ${withActions && !a.acknowledged ? `<div class="row" style="align-items:flex-start">
+      ${withActions && !a.acknowledged ? `<div class="alert-actions">
         ${a.confidence != null ? `<button class="small" data-review="${a.id}" data-verdict="tp" title="Yes, this was a real attempt: trust similar alerts more">Confirmed</button>
         <button class="small" data-review="${a.id}" data-verdict="fp" title="${esc(REVIEW_HELP[a.fp_action] || REVIEW_HELP.none)}">${a.fp_action === "identity" ? "It's me" : "Not a bypass"}</button>` : ""}
         <button class="small" data-ack="${a.id}">Dismiss</button>
@@ -121,31 +121,58 @@ function alertList(alerts, withActions) {
 function flowTable(flows, showDevice = true) {
   if (!flows.length) return `<div class="empty">No connections right now.</div>`;
   return `<div class="scroll tall"><table><thead><tr>
-    ${showDevice ? "<th>Device</th>" : ""}<th>Site / service</th><th>Destination</th><th class="right">Duration</th>
-    <th class="right">↓ Down</th><th class="right">↑ Up</th><th>Status</th></tr></thead><tbody>
+    ${showDevice ? "<th>Device</th>" : ""}<th>Site / service</th><th class="hide-sm">Destination</th><th class="right">Duration</th>
+    <th class="right">↓ Down</th><th class="right hide-sm">↑ Up</th><th>Status</th></tr></thead><tbody>
     ${flows.map(f => `<tr>
       ${showDevice ? `<td class="nowrap">${deviceLink(f.device_id, f.device)}</td>` : ""}
       <td class="trunc" title="${esc(f.domain || "")}">${esc(f.domain || f.service)}
         ${f.domain && f.service && f.service !== f.domain ? `<div class="small faint">${esc(f.service)}${f.domain_src ? " · via " + esc(f.domain_src) : ""}</div>` : ""}</td>
-      <td class="mono nowrap">${esc(f.dst_ip)}:${esc(f.dst_port)} <span class="faint">${esc(f.proto)}</span></td>
+      <td class="mono nowrap hide-sm">${esc(f.dst_ip)}:${esc(f.dst_port)} <span class="faint">${esc(f.proto)}</span></td>
       <td class="right nowrap">${fmtDur(f.duration)}</td>
       <td class="right nowrap">${fmtBytes(f.bytes_down)}</td>
-      <td class="right nowrap">${fmtBytes(f.bytes_up)}</td>
+      <td class="right nowrap hide-sm">${fmtBytes(f.bytes_up)}</td>
       <td>${f.verdict === "blocked" ? `<span class="badge bad" title="${esc(f.reason || "")}">blocked</span>` : f.ended ? `<span class="badge">closed</span>` : `<span class="badge ok">open</span>`}</td>
     </tr>`).join("")}</tbody></table></div>`;
 }
 function queryTable(rows, showDevice = true) {
   if (!rows.length) return `<div class="empty">No lookups yet.</div>`;
   return `<div class="scroll tall"><table><thead><tr><th>Time</th>${showDevice ? "<th>Device</th>" : ""}
-    <th>Domain</th><th>Type</th><th>Result</th><th>Why</th></tr></thead><tbody>
+    <th>Domain</th><th class="hide-sm">Type</th><th>Result</th><th class="hide-sm">Why</th></tr></thead><tbody>
     ${rows.map(q => `<tr>
       <td class="muted mono nowrap">${clock(q.ts)}</td>
       ${showDevice ? `<td class="nowrap">${deviceLink(q.device_id || q.client_ip, q.device || q.client_ip)}</td>` : ""}
       <td class="mono trunc" title="${esc(q.qname)}">${esc(q.qname)}</td>
-      <td class="faint small">${esc(q.qtype)}</td>
+      <td class="faint small hide-sm">${esc(q.qtype)}</td>
       <td>${verdictBadge(q.action)}</td>
-      <td class="small muted trunc" title="${esc(q.reason || "")}">${esc(q.reason || "")}</td>
+      <td class="small muted trunc hide-sm" title="${esc(q.reason || "")}">${esc(q.reason || "")}</td>
     </tr>`).join("")}</tbody></table></div>`;
+}
+
+// ------------------------------------------------------------------ dashboard address
+function addressCard(a, compact) {
+  const mdns = a.mdns;
+  return `<div class="addr">
+    <div class="addr-main">
+      <div class="small muted">Open the dashboard from any device at home:</div>
+      <div class="addr-url"><a href="${esc(a.primary)}">${esc(a.primary.replace("http://", ""))}</a>
+        <button class="small" data-copy="${esc(a.primary)}" aria-label="Copy the address">Copy</button></div>
+      <div class="small muted">If a device can't open that, use <a class="mono" href="${esc(a.fallback)}">${esc(a.fallback.replace("http://", ""))}</a>
+        (always works at home) or <a class="mono" href="${esc(a.ip)}">${esc(a.ip.replace("http://", ""))}</a>.</div>
+      ${compact ? "" : `<ul class="small muted addr-tips">
+        <li><b>On a phone:</b> point the camera at the code to open it, then use “Add to Home Screen” so it opens like an app.</li>
+        <li>Children's devices can find the name too, but only adults' devices can open the dashboard${a.mode === "gateway" ? "" : " (on the Pi)"} - and it always needs the password.</li>
+        ${a.mode === "gateway" ? `<li>Announced on the network (mDNS): ${mdns && mdns.running ? `<span class="badge ok">${esc(mdns.name)}</span>` : `<span class="badge warn">not running</span> ${esc((mdns && mdns.error) || "")} - the .home.arpa address still works.`}</li>`
+          : `<li>Monitor mode: the names work for devices that use this computer for DNS${a.reachable_from_others ? "" : `, and the dashboard is set to “only this computer” (change it in Run setup again)`}.</li>`}
+      </ul>`}
+    </div>
+    <div class="addr-qr" title="Scan to open ${esc(a.qr_url)}">${a.qr_svg}</div>
+  </div>`;
+}
+function bindAddressCard(el) {
+  $$("[data-copy]", el).forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast("Address copied"); }
+    catch (_) { toast(b.dataset.copy, 5000); }
+  });
 }
 
 // ------------------------------------------------------------------ views
@@ -173,10 +200,10 @@ views.overview = {
     ].map(([n, l, c]) => `<div class="tile ${c || ""}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("");
     $("#ov-services").innerHTML = bars(d.top_services, "minutes", fmtMins, r => fmtBytes(r.bytes_down + r.bytes_up));
     $("#ov-alerts").innerHTML = alertList(d.recent_alerts, false);
-    $("#ov-devices").innerHTML = d.devices.length ? `<table><thead><tr><th>Device</th><th>Group</th><th class="right">Online today</th><th class="right">Data</th><th class="right">Blocked</th></tr></thead><tbody>
+    $("#ov-devices").innerHTML = d.devices.length ? `<table><thead><tr><th>Device</th><th class="hide-sm">Group</th><th class="right">Online today</th><th class="right">Data</th><th class="right hide-sm">Blocked</th></tr></thead><tbody>
       ${d.devices.map(x => `<tr><td><span class="status-dot ${x.online ? "on" : ""}"></span>${deviceLink(x.device_id, x.label)}${x.paused ? ` <span class="badge warn">paused</span>` : ""}</td>
-        <td>${esc(x.group)}</td><td class="right">${fmtMins(x.minutes_today)}</td>
-        <td class="right">${fmtBytes(x.bytes_down + x.bytes_up)}</td><td class="right">${x.blocked}</td></tr>`).join("")}
+        <td class="hide-sm">${esc(x.group)}</td><td class="right">${fmtMins(x.minutes_today)}</td>
+        <td class="right">${fmtBytes(x.bytes_down + x.bytes_up)}</td><td class="right hide-sm">${x.blocked}</td></tr>`).join("")}
       </tbody></table>` : `<div class="empty">No devices seen yet. Point a device's DNS at this gateway.</div>`;
   },
 };
@@ -502,9 +529,31 @@ views.health = {
 views.devices = {
   shell: () => `
     <div class="page-head"><div><h1>Devices</h1><div class="muted">New devices land in <b>${esc(state.defaultGroup)}</b> until you assign them. Only devices in an unfiltered group (e.g. adults) bypass the filter.</div></div></div>
-    <div class="panel"><div class="scroll" id="dev-table"></div></div>`,
+    <div class="dev-cards show-sm" id="dev-cards"></div>
+    <div class="panel hide-sm"><div class="scroll" id="dev-table"></div></div>`,
   async refresh() {
     const { devices } = await api("/api/devices");
+    const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("#dev-cards");
+    if (!focused) $("#dev-cards").innerHTML = devices.length ? devices.map(x => `
+      <div class="dev-card ${x.online ? "" : "offline"}">
+        <div class="dev-card-head">
+          <span class="status-dot ${x.online ? "on" : ""}" title="${x.online ? "online" : "offline"}"></span>
+          ${deviceLink(x.device_id, x.label)}
+          ${x.paused ? `<span class="badge warn" title="${esc(x.paused_reason)}">paused</span>` : ""}
+          ${x.suspect ? `<span class="badge bad">identity check</span>` : ""}
+          ${!x.group_set ? `<span class="badge info">new</span>` : ""}
+          ${x.alerts ? `<span class="badge bad" title="bypass attempts today">${x.alerts} ⚠</span>` : ""}
+        </div>
+        <div class="dev-card-stats small muted">
+          <span><b>${fmtMins(x.minutes_today)}</b> online</span><span><b>${fmtBytes(x.bytes_down + x.bytes_up)}</b></span>
+          <span><b>${x.blocked}</b> blocked</span><span>${x.online ? "online now" : "seen " + ago(x.last_seen)}</span>
+        </div>
+        <div class="dev-card-actions">
+          ${groupSelect(x)}
+          ${x.paused ? `<button data-pause="${esc(x.device_id)}" data-min="0">Resume</button>`
+            : `<button data-pause="${esc(x.device_id)}" data-min="60">Pause 1h</button>`}
+        </div>
+      </div>`).join("") : `<div class="empty">No devices yet.</div>`;
     $("#dev-table").innerHTML = devices.length ? `<table><thead><tr>
       <th>Device</th><th>Group</th><th>Address</th><th class="right">Online today</th><th class="right">↓ / ↑</th>
       <th class="right">Lookups</th><th class="right">Blocked</th><th class="right">Alerts</th><th>Last seen</th><th></th></tr></thead><tbody>
@@ -721,8 +770,8 @@ function renderProtections(p) {
     ${groups.map(g => `<th>${esc(g.name)}</th>`).join("")}</tr></thead><tbody>
     ${sections.map(sec => `<tr class="sec"><td colspan="${2 + groups.length}">${esc(sec)}</td></tr>` + p.definitions.filter(d => d.group === sec).map(d => `
       <tr><td><b>${esc(d.label)}</b><div class="small muted prot-does" title="${esc(d.does)}">${esc(d.does)}</div></td>
-        <td class="${protIsOff(d, p.global[d.key]) ? "prot-off" : ""}"><select data-prot="${esc(d.key)}" data-scope="all" aria-label="${esc(d.label)} house-wide">${opts(d, p.global[d.key])}</select></td>
-        ${groups.map(g => `<td class="${protIsOff(d, g.effective[d.key]) ? "prot-off" : ""}"><select data-prot="${esc(d.key)}" data-scope="${esc(g.name)}" aria-label="${esc(d.label)} for ${esc(g.name)}">
+        <td data-label="House-wide" class="${protIsOff(d, p.global[d.key]) ? "prot-off" : ""}"><select data-prot="${esc(d.key)}" data-scope="all" aria-label="${esc(d.label)} house-wide">${opts(d, p.global[d.key])}</select></td>
+        ${groups.map(g => `<td data-label="${esc(g.name)}" class="${protIsOff(d, g.effective[d.key]) ? "prot-off" : ""}"><select data-prot="${esc(d.key)}" data-scope="${esc(g.name)}" aria-label="${esc(d.label)} for ${esc(g.name)}">
           ${opts(d, g.overrides[d.key], p.global[d.key])}</select></td>`).join("")}</tr>`).join("")).join("")}
     </tbody></table>`;
   $$("#prot-table select").forEach(sel => sel.onchange = async () => {
@@ -742,6 +791,9 @@ views.system = {
   shell: () => `
     <div class="page-head"><div><h1>System</h1></div>
       <div class="actions"><button id="sys-wizard">Run setup again</button><button id="sys-update">Update blocklists now</button></div></div>
+    <div class="panel" id="address"><div class="panel-head"><h2>Dashboard address</h2>
+      <div class="tools"><button class="small" id="sys-rename">Change the name</button></div></div>
+      <div class="panel-body" id="sys-address"></div></div>
     <div class="tiles" id="sys-tiles"></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h2>Components</h2></div><div class="panel-body" id="sys-comp"></div></div>
@@ -754,6 +806,8 @@ views.system = {
     <div class="panel"><div class="panel-head"><h2>Inspector counters</h2></div><div class="panel-body" id="sys-insp"></div></div>`,
   init() {
     $("#sys-wizard").onclick = () => openWizard(1).catch(e => toast(e.message, 4000));
+    $("#sys-rename").onclick = () => openWizard(1).catch(e => toast(e.message, 4000));
+    api("/api/address").then(a => { $("#sys-address").innerHTML = addressCard(a); bindAddressCard($("#sys-address")); });
     $("#sys-update").onclick = () => act(() => post("/api/system/update-lists"), "Updating lists in the background…");
     $("#pw-form").onsubmit = e => {
       e.preventDefault();
@@ -798,7 +852,10 @@ async function render() {
   const [view, ...rest] = (location.hash.slice(1) || "overview").split("/");
   const v = views[view] ? view : "overview";
   state.view = v; state.param = rest.length ? decodeURIComponent(rest.join("/")) : null;
-  $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.v === (v === "device" ? "devices" : v)));
+  const navV = v === "device" ? "devices" : v;
+  $$("#tabs a, #bottom-nav a, #more-sheet a").forEach(a => a.classList.toggle("active", a.dataset.v === navV));
+  $("#more-btn").classList.toggle("active", !!$(`#more-sheet a[data-v="${navV}"]`));
+  closeMore();
   $("#view").innerHTML = views[v].shell();
   clearInterval(state.timer);
   state.timer = setInterval(() => { if (!document.hidden) refresh(); }, views[v].fast ? 2000 : 5000);
@@ -813,11 +870,34 @@ async function refresh() {
     await views[state.view].refresh();
     const { alerts } = await api("/api/alerts?limit=200&unacked=true");
     const n = alerts.filter(a => a.severity !== "info").length;
-    const c = $("#alert-count"); c.hidden = !n; c.textContent = n;
+    setCount("alerts", n);
     const dl = await api("/api/downloads?limit=1");
-    const dc = $("#dl-count"); dc.hidden = !dl.pending.length; dc.textContent = dl.pending.length;
+    setCount("reviews", dl.pending.length);
   } catch (_) { /* shown elsewhere */ }
 }
+
+function setCount(kind, n) {
+  $$(`[data-count="${kind}"]`).forEach(c => { c.hidden = !n; c.textContent = n > 99 ? "99+" : n; });
+}
+
+// ------------------------------------------------------------------ "More" sheet (phones)
+function openMore() {
+  $("#more-sheet").hidden = $("#more-backdrop").hidden = false;
+  requestAnimationFrame(() => $("#more-sheet").classList.add("open"));
+  $("#more-btn").setAttribute("aria-expanded", "true");
+  const first = $("#more-sheet a"); if (first) first.focus();
+}
+function closeMore() {
+  const sh = $("#more-sheet");
+  if (!sh || sh.hidden) return;
+  sh.classList.remove("open");
+  $("#more-backdrop").hidden = true;
+  $("#more-btn").setAttribute("aria-expanded", "false");
+  setTimeout(() => { if (!sh.classList.contains("open")) sh.hidden = true; }, 200);
+}
+$("#more-btn").onclick = () => ($("#more-sheet").hidden ? openMore() : closeMore());
+$("#more-backdrop").onclick = closeMore;
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMore(); });
 
 document.addEventListener("change", e => {
   const sel = e.target.closest("select[data-group]");
@@ -879,7 +959,9 @@ $("#login-form").onsubmit = async e => {
     start();
   } catch (err) { $("#login-err").textContent = err.message; }
 };
-$("#logout").onclick = async () => { try { await post("/api/logout"); } catch (_) { } location.reload(); };
+const logout = async () => { try { await post("/api/logout"); } catch (_) { } location.reload(); };
+$("#logout").onclick = logout;
+$("#logout-m").onclick = logout;
 
 async function start() {
   const sess = await api("/api/session");
@@ -890,6 +972,7 @@ async function start() {
   const mb = $("#mode-badge");
   mb.textContent = sess.mode === "gateway" ? "Gateway mode" : "Monitor mode";
   mb.className = "badge " + (sess.mode === "gateway" ? "ok" : "info");
+  const mbm = $("#mode-badge-m"); mbm.textContent = mb.textContent; mbm.className = mb.className;
   await render();
   if (!sess.setup_complete) openWizard().catch(e => toast(e.message, 4000));
 }

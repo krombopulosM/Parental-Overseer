@@ -11,9 +11,10 @@ import collections
 import threading
 import time
 
-from dnslib import CNAME, RR, DNSRecord, QTYPE, RCODE
+from dnslib import A, CNAME, RR, DNSRecord, QTYPE, RCODE
 from dnslib.server import BaseResolver, DNSLogger, DNSServer
 
+from . import localname
 from .protections import BYPASS_CATEGORIES
 from .services import is_ip_literal, registrable_domain
 
@@ -119,6 +120,17 @@ class GuardianResolver(BaseResolver):
         if self.db is not None:
             self.db.log_query(ctx.device_id, ctx.ip, qname, qtype, action, reason)
 
+    def _dashboard_answer(self, request, ctx, qname, qtype):
+        """family.local / family.home.arpa -> this gateway. Answered before any
+        filtering or pause, so a new or paused device can still find the dashboard
+        (which has its own password and, on the Pi, adults-only access)."""
+        reply = request.reply()
+        if qtype == "A":
+            ip = localname.server_ip(self.cfg, ctx.ip)
+            reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A(ip), ttl=60))
+        self._log(ctx, qname, qtype, "allowed", "this gateway's dashboard")
+        return reply
+
     @staticmethod
     def _reply(request, rcode=RCODE.NOERROR):
         r = request.reply()
@@ -165,6 +177,9 @@ class GuardianResolver(BaseResolver):
             self.alerts.emit("custom_dns", device_id=ctx.device_id, client_ip=ctx.ip, action="redirected",
                              detail="Sent its DNS lookups to a server of its own choosing instead of the "
                                     "gateway. They were quietly redirected here and filtered anyway.")
+
+        if qname in localname.names(self.cfg):
+            return self._dashboard_answer(request, ctx, qname, qtype)
 
         paused, why = self.scheduler.is_paused(ctx.device_id, ctx.group)
         if paused:

@@ -83,6 +83,10 @@ class Guardian:
             from .lanwatch import LanWatch
             self.lanwatch = LanWatch(cfg, self.db, self.policy, self.identity, self.alerts,
                                      on_change=self.device_changed)
+        self.mdns = None
+        if self.mode == "gateway":
+            from .localname import MdnsPublisher
+            self.mdns = MdnsPublisher(cfg)
         self.alerts.listeners.append(self._auto_pause)
         self.alerts.listeners.append(self._escalate)
         self._attempts: dict[str, list] = {}
@@ -128,6 +132,10 @@ class Guardian:
         if self.lanwatch is not None:
             self.lanwatch.start()
             print(f"[lanwatch] watching {', '.join(self.lanwatch.ifaces)} for tampering")
+        if self.mdns is not None:
+            self.mdns.sync()
+            st = self.mdns.status()
+            print(f"[mdns] {'announcing ' + st['name'] if st['running'] else 'not announcing: ' + str(st['error'])}")
         threading.Thread(target=self._housekeeping, name="housekeeping", daemon=True).start()
 
     # ------------------------------------------------------------ defences
@@ -211,6 +219,8 @@ class Guardian:
         self.db.set_meta("heartbeat", str(now))
 
     def stop(self):
+        if self.mdns is not None:
+            self.mdns.stop()
         if self.gateway is not None:
             self.gateway.teardown()
         self.db.close()
@@ -224,6 +234,8 @@ class Guardian:
                 self.scheduler.reload()
                 if self.gateway is not None:
                     self.sync_gateway()
+                if self.mdns is not None:
+                    self.mdns.sync()                 # restarts the announcement if Avahi restarted
                 if self.lanwatch is not None:
                     self.lanwatch.expire_pins()
                     self.lanwatch.check_static_ips()
@@ -281,6 +293,8 @@ class Guardian:
         self.reputation.refresh_settings()
         if self.monitor is not None:
             self.monitor.log_trusted = bool(self.cfg["flows"].get("log_trusted_devices", True))
+        if self.mdns is not None:
+            self.mdns.sync()
         self.device_changed()
 
     def restart(self, delay: float = 1.0):
@@ -335,6 +349,8 @@ class Guardian:
                             "error": self.monitor.error or getattr(self.monitor.backend, "error", None)}
         if self.detector is not None:
             s["detector"] = {"last_run": self.detector.last_run, "recent": self.detector.flagged[-10:]}
+        if self.mdns is not None:
+            s["mdns"] = self.mdns.status()
         if self.lanwatch is not None:
             s["lanwatch"] = {"running": self.lanwatch.running, "error": self.lanwatch.error,
                              "seen": dict(self.lanwatch.counters), "pinned": list(self.lanwatch.pins)}

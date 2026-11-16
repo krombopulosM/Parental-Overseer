@@ -114,6 +114,7 @@ table inet {TABLE} {{
         type nat hook prerouting priority dstnat; policy accept;
         iifname {lan} meta l4proto {{ tcp, udp }} th dport 53 ip daddr != {self.lan_ip} dnat ip to {self.lan_ip}:{self.redirect_port}
         iifname {lan} meta l4proto {{ tcp, udp }} th dport 53 ip daddr {self.lan_ip} th dport != {self.dns_port} dnat ip to {self.lan_ip}:{self.dns_port}
+        iifname {lan} ip daddr {self.lan_ip} tcp dport 80 dnat ip to {self.lan_ip}:{self.web_port}
     }}
 
     chain nat_out {{
@@ -130,6 +131,7 @@ table inet {TABLE} {{
         iifname {lan} meta l4proto {{ tcp, udp }} th dport {{ 53, {self.dns_port}, {self.redirect_port} }} accept
         iifname {lan} udp dport 67 accept
         iifname {lan} tcp dport {{ 22, {self.web_port} }} jump admin_access
+        iifname {lan} tcp dport 443 reject with tcp reset
         iifname "{self.wan}" udp sport 67 udp dport 68 accept
 {wan_ssh}        iifname {lan} meta mark {M_FILTERED:#x} meta l4proto {{ tcp, udp }} ct original packets <= 1 {q}
     }}
