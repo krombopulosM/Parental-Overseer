@@ -48,29 +48,29 @@ def test_validate_categories_protections_and_choices(tmp_path):
     with pytest.raises(ValueError):
         settings.validate({"dns_port": 80}, cfg)
     gw = _cfg(tmp_path, "gateway")
-    assert "dns_port" not in settings.validate({"dns_port": 5300, "web_host": "0.0.0.0"}, gw)
+    assert "dns_port" not in settings.validate({"dns_port": 5310, "web_host": "0.0.0.0"}, gw)
 
 
 def test_apply_writes_local_config_and_applies_live(tmp_path):
     cfg = _cfg(tmp_path)
     groups_obj = cfg["groups"]["kids"]
-    res = settings.apply(cfg, {**settings.PRESETS["light"]["values"], "dns_port": 5300, "retention_days": 14})
+    res = settings.apply(cfg, {**settings.PRESETS["light"]["values"], "dns_port": 5310, "retention_days": 14})
     assert res["restart_required"] == ["dns_port"]
     assert cfg["downloads"]["policy"] == "off"
     assert cfg["adult"]["mode"] == "standard"
     assert cfg["retention_days"] == 14
-    assert cfg["dns"]["listen_port"] != 5300                 # needs the restart first
+    assert cfg["dns"]["listen_port"] != 5310                 # needs the restart first
     assert cfg["groups"]["kids"] is groups_obj                # updated in place
     assert cfg["groups"]["quarantine"]["categories"] == ["adult", "gambling", "torrent"]
     assert cfg["protections"]["vpn"] is True
     assert cfg["adult"]["family_dns"]
     local = yaml.safe_load(open(tmp_path / "config.local.yaml"))
-    assert local["dns"]["listen_port"] == 5300
+    assert local["dns"]["listen_port"] == 5310
     assert local["downloads"]["policy"] == "off"
     # a fresh load of a config in that directory picks the local file up
     (tmp_path / "config.yaml").write_text(open(os.path.join(ROOT, "config.yaml")).read())
     again = load_config(str(tmp_path / "config.yaml"))
-    assert again["dns"]["listen_port"] == 5300 and again["downloads"]["policy"] == "off"
+    assert again["dns"]["listen_port"] == 5310 and again["downloads"]["policy"] == "off"
     settings.apply(cfg, {"family_dns": False})
     assert cfg["adult"]["family_dns"] == []
     assert yaml.safe_load(open(tmp_path / "config.local.yaml"))["retention_days"] == 14   # kept
@@ -117,7 +117,7 @@ def test_wizard_flow(client):
 
 def test_wizard_restart_and_validation(client):
     g, c, restarts = client
-    r = c.post("/api/wizard/apply", headers=H, json={"values": {"dns_port": 5300}})
+    r = c.post("/api/wizard/apply", headers=H, json={"values": {"dns_port": 5310}})
     assert r.json()["restart_required"] == ["dns_port"]
     assert c.post("/api/wizard/apply", headers=H, json={"values": {"adult_mode": "loose"}}).status_code == 400
     assert c.post("/api/system/restart", headers=H).status_code == 200

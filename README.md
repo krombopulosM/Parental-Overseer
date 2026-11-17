@@ -276,10 +276,11 @@ when it might be innocent. The score combines:
 
 ---
 
-## Run it on your PC (monitor mode)
+## Run it on your PC
 
-Monitor mode gives you DNS filtering, the full dashboard, and traffic
-accounting for the PC itself. Use it to develop and debug.
+Monitor mode (the default on a PC) gives you DNS filtering, the full dashboard,
+and traffic accounting for the PC itself. On Windows it can also block - see
+[Blocking on Windows](#blocking-on-windows-this-pc-and-its-mobile-hotspot).
 
 ```bash
 git clone https://github.com/krombopulosM/Parental-Overseer.git
@@ -300,16 +301,62 @@ then opens. For traffic accounting on Windows, install
 Test DNS filtering without touching your system settings:
 
 ```
-nslookup -port=5353 pornhub.com 127.0.0.1
-nslookup -port=5353 protonvpn.com 127.0.0.1
+nslookup -port=5300 pornhub.com 127.0.0.1
+nslookup -port=5300 protonvpn.com 127.0.0.1
 ```
 
 Your PC appears as a device in the **quarantine** group (filtered). Move it to
 **adults** in the Devices page to see the difference.
 
-### Test the inspector on Windows with a packet capture
+### Blocking on Windows (this PC and its Mobile Hotspot)
 
-Inline blocking needs the Pi, but you can see exactly what the Pi *would* do:
+Windows can block too, not just watch, using the same inspector, protections
+and DNS filter as the Pi. The packets reach them through
+[WinDivert](https://reqrypt.org/windivert.html) (a signed packet-filter driver,
+bundled with `pydivert`) instead of nftables.
+
+```bat
+pip install -r requirements-windows.txt
+python run.py            :: from an Administrator command prompt
+```
+
+In the setup wizard's first step choose **Block - protect this PC and its
+hotspot** (or set `mode: gateway`). Then:
+
+- **this PC**: its connections go through every check; its DNS lookups are
+  answered by the gateway's filter whatever server they were sent to; its
+  public IPv6 is dropped (as on the Pi). If the PC is in an unfiltered group
+  (adults), only its DNS is handled, so it isn't slowed down;
+- **its Mobile Hotspot**: turn on *Settings > Network > Mobile hotspot* and the
+  devices that join it are filtered like on the Pi, and can't reach the rest
+  of the home network.
+
+Prove it works on your PC (as administrator):
+
+```bat
+python run.py --windows-check              :: blocks really happen on this PC?
+python run.py --windows-check --hotspot 60 :: ...and for a phone on its hotspot
+```
+
+The check runs a private copy of the gateway with this PC treated as a child's
+device, tries a normal site, an adult site, encrypted DNS, a bare IP address,
+a VPN server, a Tor-shaped connection, WireGuard and QUIC, and saves
+`windows-check-report.txt` (anonymised) to send back.
+
+To run it permanently on a child's PC (at start-up, as SYSTEM, restarted if it
+stops): `powershell -ExecutionPolicy Bypass -File .\deploy\windows-install.ps1`,
+and give the child a standard (non-administrator) account.
+
+Differences from the Pi: there's no separate box, so if the program isn't
+running, traffic flows unfiltered (a SYSTEM task and a standard account stop a
+child from ending it). Only this PC and its hotspot are covered, not the whole
+house. Some antivirus products flag WinDivert as a "hacking tool" because
+packet-filter drivers can be misused; it's the same driver many firewalls and
+network tools use, and can be allowed.
+
+### Test the inspector on a packet capture
+
+You can also see exactly what the Pi *would* do with traffic you've recorded:
 
 1. Start a Wireshark capture.
 2. Connect with a VPN (or try any other bypass).
@@ -456,7 +503,7 @@ reopens it):
 
 | Step | What it sets |
 |---|---|
-| How it runs | The dashboard's name (`family` → http://family.local). Detects the platform, admin rights, interfaces, firewall, capture support and blocklists, and shows a pass/warn checklist. On a PC: DNS port (53 for real devices, 5353 for testing) and who can open the dashboard. On the Pi: the detected ports plus a house checklist. |
+| How it runs | The dashboard's name (`family` → http://family.local). Detects the platform, admin rights, interfaces, firewall, capture support and blocklists, and shows a pass/warn checklist. On a PC: what it does (watch only, or block on this PC and its Mobile Hotspot - Windows), DNS port (53 for real devices, 5300 for testing) and who can open the dashboard. On the Pi: the detected ports plus a house checklist. |
 | Protection level | **Strict** (recommended), **Balanced** or **Light** presets. |
 | Fine-tune | Adult-content mode, SafeSearch, YouTube Restricted Mode, family DNS, unknown video, downloads, unknown destinations, auto-pause after bypass attempts / network attacks. |
 | What to block | Categories for the kids, consoles and new-device groups. |
@@ -552,7 +599,7 @@ never included.
 ## Tests
 
 ```bash
-pytest -q                               # 188 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
+pytest -q                               # 199 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 

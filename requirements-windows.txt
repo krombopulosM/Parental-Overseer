@@ -1,0 +1,3 @@
+# Windows only: blocking on this PC and its Mobile Hotspot (gateway mode).
+# pydivert bundles the signed WinDivert driver (https://reqrypt.org/windivert.html).
+pydivert>=2.1.0

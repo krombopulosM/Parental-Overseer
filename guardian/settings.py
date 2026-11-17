@@ -87,6 +87,7 @@ _PATHS = {
     "fail_open": (("enforcement", "fail_open"), True),
     "dns_port": (("dns", "listen_port"), True),
     "web_host": (("web", "host"), True),
+    "mode": (("mode",), True),
     "tamper_watch": (("tamper", "enabled"), True),
     "local_name": (("web", "local_name"), False),
     "updates_enabled": (("updates", "enabled"), False),
@@ -169,8 +170,8 @@ def validate(values: dict, cfg: dict) -> dict:
             out[key] = max(1, min(365, int(val)))
         elif key == "dns_port":
             port = int(val)
-            if port not in (53, 5353) and not 1024 < port < 65536:
-                raise ValueError("DNS port must be 53, 5353 or above 1024")
+            if port != 53 and not 1024 < port < 65536:
+                raise ValueError("DNS port must be 53 or above 1024")
             out[key] = port
         elif key in ("updates_source", "updates_branch", "updates_subdir"):
             from .updater import UpdateError, validate_source
@@ -195,13 +196,20 @@ def validate(values: dict, cfg: dict) -> dict:
             if not valid_label(val):
                 raise ValueError("The dashboard name can use letters, numbers and hyphens (e.g. family, smith-home)")
             out[key] = val
+        elif key == "mode":
+            if val not in ("monitor", "gateway"):
+                raise ValueError("mode: monitor or gateway")
+            out[key] = val
         elif key == "default_group":
             if val not in cfg["groups"]:
                 raise ValueError(f"unknown group {val}")
             out[key] = val
         elif key in _PATHS:
             out[key] = val
-    if cfg.get("mode") == "gateway":
+    import sys
+    if not sys.platform.startswith("win"):
+        out.pop("mode", None)                   # the Pi's mode is set by setup-pi.sh
+    if cfg.get("mode") == "gateway" and not sys.platform.startswith("win"):
         out.pop("dns_port", None)               # the Pi's ports are set by setup-pi.sh
         out.pop("web_host", None)
     return out

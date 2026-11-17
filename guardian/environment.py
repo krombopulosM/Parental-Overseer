@@ -97,6 +97,13 @@ def capture_available() -> bool:
         return False
 
 
+def _has_ip(ip: str) -> bool:
+    try:
+        return ip in socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        return False
+
+
 def detect(cfg: dict, guardian=None) -> dict:
     mode = cfg.get("mode", "monitor")
     gw = cfg.get("gateway") or {}
@@ -118,7 +125,33 @@ def detect(cfg: dict, guardian=None) -> dict:
         checks.append({"status": status, "title": title, "detail": detail})
 
     names = {i["name"] for i in env["interfaces"]}
-    if mode == "gateway":
+    win = sys.platform.startswith("win")
+    env["windows"] = win
+    if win:
+        from .gateway.windivert import available
+        ok, why = available()
+        env["windivert"] = {"available": ok, "error": why}
+        hot = "192.168.137.1"
+        env["hotspot_up"] = hot in {a for i in env["interfaces"] for a in i.get("ipv4", [])} or _has_ip(hot)
+    if mode == "gateway" and win:
+        check("ok" if env["admin"] else "bad", "Administrator rights",
+              "Present." if env["admin"] else "Blocking on Windows needs the program to run as administrator.")
+        gw = guardian.gateway if guardian is not None else None
+        st = (gw.status if gw is not None else {}) or {}
+        if st.get("applied"):
+            check("ok", "Packet filter (WinDivert)",
+                  f"Running: {', '.join(st.get('handles') or [])}. This PC's traffic and DNS go through the same "
+                  "checks as on the Raspberry Pi.")
+        else:
+            check("bad", "Packet filter (WinDivert)", st.get("error") or env["windivert"]["error"] or "not started")
+        check("ok" if env["hotspot_up"] else "warn", "Mobile Hotspot",
+              "On - devices that join it are filtered too." if env["hotspot_up"] else
+              "Off - only this PC is protected. Turn on Settings > Network > Mobile hotspot to filter other "
+              "devices through this PC.")
+        check("warn", "If this program stops",
+              "Traffic flows unfiltered until it's running again. For a child's own PC, run it as a service and "
+              "give the child a standard (non-administrator) Windows account.")
+    elif mode == "gateway":
         check("ok" if sys.platform.startswith("linux") else "bad", "Linux",
               "Gateway mode runs on Linux (the Raspberry Pi).")
         check("ok" if env["admin"] else "bad", "Running as root",

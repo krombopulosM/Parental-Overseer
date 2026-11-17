@@ -8,6 +8,7 @@ which IPs this device was given (used by the inspector's DNS-consistency check).
 from __future__ import annotations
 
 import collections
+import sys
 import threading
 import time
 
@@ -101,6 +102,9 @@ class GuardianResolver(BaseResolver):
         d = cfg["dns"]
         self.upstreams = list(d.get("upstreams") or ["1.1.1.1"])
         self.up_port = int(d.get("upstream_port", 53))
+        # Windows gateway: this PC's own UDP DNS is answered by the gateway itself, so
+        # the gateway asks its upstream servers over TCP (which isn't intercepted).
+        self.up_tcp = bool(d.get("upstream_tcp", sys.platform.startswith("win") and cfg.get("mode") == "gateway"))
         self.strip_https = d.get("strip_https_records", "filtered")
         self.block_qtypes = set(d.get("block_qtypes_filtered") or [])
         self.strip_aaaa = cfg["mode"] == "gateway" and not cfg["gateway"].get("ipv6", False)
@@ -140,7 +144,7 @@ class GuardianResolver(BaseResolver):
     def forward(self, request, upstreams=None):
         for up in upstreams or self.upstreams:
             try:
-                data = request.send(up, self.up_port, tcp=False, timeout=3)
+                data = request.send(up, self.up_port, tcp=self.up_tcp, timeout=3)
                 rec = DNSRecord.parse(data)
                 if rec.header.tc:
                     rec = DNSRecord.parse(request.send(up, self.up_port, tcp=True, timeout=4))

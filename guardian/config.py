@@ -15,7 +15,7 @@ DEFAULTS: dict = {
     "mode": "monitor",
     "dns": {
         "listen_host": "0.0.0.0",
-        "listen_port": 5353,
+        "listen_port": 5300,              # 5353 is mDNS (how .local names are found) - not used
         "upstreams": ["1.1.1.1", "9.9.9.9"],
         "upstream_port": 53,
         "strip_https_records": "filtered",
@@ -45,6 +45,7 @@ DEFAULTS: dict = {
         "protocol_exempt_domains": ["whatsapp.net", "whatsapp.com"],
     },
     "protections": {},                 # filled from protections.DEFAULTS in normalize()
+    "windows": {"protect_this_pc": True, "hotspot": True, "hotspot_ip": "192.168.137.1", "hotspot_prefix": 24},
     "updates": {"enabled": True, "auto_install": True, "source": "", "branch": "main", "subdir": "",
                 "interval_minutes": 60},
     "torrent": {"fanout_peers": 25, "window": 60},

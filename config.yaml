@@ -8,7 +8,7 @@ mode: monitor
 
 dns:
   listen_host: 0.0.0.0
-  listen_port: 5353              # 53 on the Pi (setup-pi.sh sets this)
+  listen_port: 5300              # testing port on a PC; 53 on the Pi (setup-pi.sh sets this)
   upstreams: ["1.1.1.1", "9.9.9.9"]
   upstream_port: 53
   # Remove HTTPS/SVCB records so browsers never get Encrypted Client Hello

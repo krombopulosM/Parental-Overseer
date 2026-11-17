@@ -175,11 +175,12 @@ const WZ_VIEWS = {
         <td>${i.name === env.configured.wan ? `<span class="badge info">internet</span>` : i.name === env.configured.lan ? `<span class="badge ok">home network</span>` : i.default_route ? `<span class="faint small">default route</span>` : ""}</td></tr>`).join("")}
       </tbody></table></div>` : "";
     const local = wzIsLocal();
+    const piGw = gw && !env.windows;
     return `
       <h1 id="wz-title" tabindex="-1">How it runs</h1>
       <div class="wz-mode">
         <div class="wz-mode-icon">${gw ? "🛡️" : "🖥️"}</div>
-        <div><b>${gw ? "Gateway mode" : "Monitor mode"}</b> <span class="muted">on ${esc(env.hostname)} · ${esc(env.platform)}${env.raspberry_pi ? " (Raspberry Pi)" : ""}</span>
+        <div><b>${piGw ? "Gateway mode" : gw ? "Blocking on this PC" : "Monitor mode"}</b> <span class="muted">on ${esc(env.hostname)} · ${esc(env.platform)}${env.raspberry_pi ? " (Raspberry Pi)" : ""}</span>
           <p class="d">${gw ? "This machine is the router: every device's traffic passes through it, so filtering, the anti-bypass checks and blocking all happen in the network itself. Nothing on the children's devices can switch it off."
             : "This machine filters the devices that use it for DNS and watches the traffic it can see. It's ideal for trying things out and debugging - for real protection run it on the Raspberry Pi in gateway mode."}</p></div>
       </div>
@@ -191,7 +192,12 @@ const WZ_VIEWS = {
         <span class="error" id="wz-name-err"></span></p>
       <h2>Checklist</h2>
       <ul class="wz-checks">${checks}</ul>
-      ${gw ? `<h2>Network ports</h2>${ifaces}
+      ${env.windows ? `<h2>What it does on this PC</h2>
+        ${wzChoice("mode", [
+          ["gateway", "Block - protect this PC and its hotspot", "This PC's traffic, and devices on its Mobile Hotspot, go through every check and are blocked like on the Raspberry Pi. Needs administrator rights" + (env.windivert && !env.windivert.available ? ` - <b>${esc(env.windivert.error)}</b>` : "") + "."],
+          ["monitor", "Watch only", "Shows what's happening and what would be blocked, but lets everything through."],
+        ], wz.values.mode, "two")}` : ""}
+      ${piGw ? `<h2>Network ports</h2>${ifaces}
         <p class="muted small">Which port faces the internet and which faces your home is chosen by <span class="mono">deploy/setup-pi.sh</span> - run it again to change them. It isn't offered here: one wrong choice would cut this dashboard off.</p>
         <div class="wz-note"><b>House checklist</b><ul>
           <li>Your ISP router's Wi-Fi is turned off (or its password changed and not shared), so nobody can join the network behind the gateway's back.</li>
@@ -200,8 +206,8 @@ const WZ_VIEWS = {
       : `<h2>Which devices it filters</h2>
         ${wzChoice("dns_port", [
           [53, "Real devices (port 53)", "Point a device's DNS at this computer's address and it's filtered. Needs administrator rights."],
-          [5353, "Testing only (port 5353)", "Nothing changes for the devices in the house - use <span class='mono'>nslookup -port=5353</span> or the e2e tests to try it out."],
-        ].concat([53, 5353].includes(Number(wz.values.dns_port)) ? [] :
+          [5300, "Testing only (port 5300)", "Nothing changes for the devices in the house - use <span class='mono'>nslookup -port=5300</span> to try it out."],
+        ].concat([53, 5300].includes(Number(wz.values.dns_port)) ? [] :
           [[wz.values.dns_port, `Keep port ${wz.values.dns_port}`, "Your current custom port - for testing."]]), wz.values.dns_port, "two")}
         <h2>Who can open this dashboard</h2>
         ${wzChoice("web_host", [
@@ -323,7 +329,7 @@ const WZ_VIEWS = {
     const restart = wzRestartKeys();
     const rows = [
       [S("run"), "Address", `http://${v.local_name || "family"}.local${wzPort()}`],
-      [S("run"), "How it runs", d.mode === "gateway" ? "Gateway mode" : `Monitor mode · DNS port ${v.dns_port} · dashboard ${v.web_host === "0.0.0.0" ? "open to the network" : "this computer only"}`],
+      [S("run"), "How it runs", wzPiGateway() ? "Gateway mode" : d.environment.windows ? `${v.mode === "gateway" ? "Blocking on this PC (and its hotspot)" : "Watch only"} · DNS port ${v.dns_port} · dashboard ${v.web_host === "0.0.0.0" ? "open to the network" : "this computer only"}` : `Monitor mode · DNS port ${v.dns_port} · dashboard ${v.web_host === "0.0.0.0" ? "open to the network" : "this computer only"}`],
       [S("level"), "Level", wz.preset === "custom" ? "Custom" : d.presets[wz.preset].label],
       [S("tune"), "Adult content", `${lab("adult_mode", v.adult_mode)} · SafeSearch ${yes(v.safesearch)} · YouTube ${lab("youtube", v.youtube)} · family DNS ${yes(v.family_dns)} · unknown video: ${lab("unknown_video", v.unknown_video).toLowerCase()}`],
       [S("tune"), "Downloads", lab("downloads", v.downloads)],
@@ -337,15 +343,17 @@ const WZ_VIEWS = {
     return `<h1 id="wz-title" tabindex="-1">Ready to go</h1>
       <p class="lead">Here's what will be set. Most of it applies the moment you press Finish.</p>
       <dl class="wz-review">${rows.map(([step, k, val]) => `<dt>${esc(k)}</dt><dd><span>${esc(val)}</span><button class="link small" data-wz-go="${step}">Change</button></dd>`).join("")}</dl>
-      ${restart.length ? `<div class="wz-note warn"><b>A restart is needed</b> for ${esc(restart.map(k => ({ dns_port: "the DNS port", web_host: "dashboard access", fail_open: "the inspector setting", tamper_watch: "network watching" }[k])).join(" and "))}. The service restarts itself after you press Finish and this page reconnects - it takes a few seconds.</div>` : ""}
+      ${restart.length ? `<div class="wz-note warn"><b>A restart is needed</b> for ${esc(restart.map(k => ({ dns_port: "the DNS port", web_host: "dashboard access", fail_open: "the inspector setting", tamper_watch: "network watching", mode: "switching between watching and blocking" }[k])).join(" and "))}. The service restarts itself after you press Finish and this page reconnects - it takes a few seconds.</div>` : ""}
       <p class="muted small">Settings are saved to <span class="mono">config.local.yaml</span> next to <span class="mono">config.yaml</span>.</p>`;
   },
 };
 
+function wzPiGateway() { return wz.data.mode === "gateway" && !wz.data.environment.windows; }
 function wzRestartKeys() {
   const o = wz.data.values, v = wz.values, out = [];
-  for (const k of ["dns_port", "web_host", "fail_open", "tamper_watch"]) {
-    if (wz.data.mode === "gateway" ? ["dns_port", "web_host"].includes(k) : ["fail_open", "tamper_watch"].includes(k)) continue;
+  for (const k of ["dns_port", "web_host", "fail_open", "tamper_watch", "mode"]) {
+    if (wzPiGateway() ? ["dns_port", "web_host", "mode"].includes(k)
+        : ["fail_open", "tamper_watch"].includes(k) || (k === "mode" && !wz.data.environment.windows)) continue;
     if (String(o[k]) !== String(v[k])) out.push(k);
   }
   return out;
@@ -353,6 +361,7 @@ function wzRestartKeys() {
 
 const WZ_BIND = {
   run(body) {
+    wzBindChoices(body, "mode", v => { wz.values.mode = v; });
     const inp = $("#wz-local-name", body);
     inp.oninput = () => {
       const v = inp.value.trim().toLowerCase();
@@ -432,8 +441,9 @@ async function wzFinish() {
   const btn = $("#wz-finish");
   btn.disabled = true; btn.textContent = "Saving…";
   const values = { ...wz.values };
-  if (wz.data.mode === "gateway") { delete values.dns_port; delete values.web_host; }
+  if (wzPiGateway()) { delete values.dns_port; delete values.web_host; delete values.mode; }
   else { delete values.fail_open; delete values.tamper_watch; }
+  if (!wz.data.environment.windows) delete values.mode;
   const devices = Object.entries(wz.devices).map(([device_id, s]) => ({ device_id, name: s.name, group: s.group || null }));
   try {
     const r = await post("/api/wizard/apply", { values, devices, bedtime: wz.bedtime, finish: true });

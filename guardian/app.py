@@ -34,8 +34,10 @@ class Guardian:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.mode = cfg["mode"]
-        if self.mode == "gateway" and not sys.platform.startswith("linux"):
-            raise SystemExit("gateway mode needs Linux (the Raspberry Pi). Use mode: monitor on this machine.")
+        self.linux = sys.platform.startswith("linux")
+        self.windows = sys.platform.startswith("win")
+        if self.mode == "gateway" and not (self.linux or self.windows):
+            raise SystemExit("gateway mode runs on Linux (the Raspberry Pi) or Windows. Use mode: monitor here.")
         self.started_at = time.time()
         self.db = DB(resolve_data_path(cfg, cfg["database"]))
         self.alerts = AlertSink(self.db, echo=True)
@@ -55,9 +57,14 @@ class Guardian:
         self.inspector = Inspector(cfg, self.policy, self.lists, self.dnscache, self.alerts, self.labels)
 
         self.gateway = self.nfq = None
-        if self.mode == "gateway":
+        if self.mode == "gateway" and self.linux:
             from .gateway.nft import NftGateway
             self.gateway = NftGateway(cfg, self.lists, self.db, self.inspector)
+        elif self.mode == "gateway" and self.windows:
+            # Windows: WinDivert feeds the same inspector (this PC + its Mobile Hotspot)
+            from .gateway.windivert import WindowsGateway
+            self.gateway = WindowsGateway(cfg, self.lists, self.db, self.inspector, resolver=self.resolver,
+                                          identity=self.identity, policy=self.policy)
 
         self.monitor = None
         backend = self._flow_backend()
@@ -66,9 +73,11 @@ class Guardian:
             self.monitor = FlowMonitor(cfg, self.db, self.policy, self.dnscache, self.labels, backend)
         from .downloads import DownloadGuard
         kill = None
-        if self.gateway is not None:
+        if self.gateway is not None and self.linux:
             from .gateway.system import kill_flow
             kill = kill_flow
+        elif self.gateway is not None:
+            kill = self.gateway.kill_flow
         self.downloads = DownloadGuard(cfg, self.db, self.lists, self.alerts, kill_flow=kill)
         from .adult import AdultGuard
         self.adult = AdultGuard(cfg, self.lists, self.alerts)
@@ -89,14 +98,14 @@ class Guardian:
                                      self.alerts, self.gateway, reputation=self.reputation)
         self.errors: dict[str, str] = {}
         self.lanwatch = None
-        if self.mode == "gateway" and (cfg.get("tamper") or {}).get("enabled", True):
+        if self.mode == "gateway" and self.linux and (cfg.get("tamper") or {}).get("enabled", True):
             from .lanwatch import LanWatch
             self.lanwatch = LanWatch(cfg, self.db, self.policy, self.identity, self.alerts,
                                      on_change=self.device_changed)
         from .updater import Updater
         self.updater = Updater(cfg, self.db, self.alerts)
         self.mdns = None
-        if self.mode == "gateway":
+        if self.mode == "gateway" and self.linux:
             from .localname import MdnsPublisher
             self.mdns = MdnsPublisher(cfg)
         self.alerts.listeners.append(self._auto_pause)
@@ -106,7 +115,7 @@ class Guardian:
         self.refresh_allowlist()
 
     def _flow_backend(self):
-        if self.mode == "gateway":
+        if self.mode == "gateway" and sys.platform.startswith("linux"):
             from .flows.conntrack import ConntrackBackend
             if ConntrackBackend.available():
                 return ConntrackBackend(self.cfg)
@@ -114,7 +123,8 @@ class Guardian:
             return None
         from .flows.sniffer import SnifferBackend
         if SnifferBackend.available():
-            return SnifferBackend(self.cfg, self.labels, observer=self.inspector.observe)
+            return SnifferBackend(self.cfg, self.labels,
+                                  observer=self.inspector.observe if self.mode != "gateway" else None)
         return None
 
     # ------------------------------------------------------------ lifecycle
@@ -131,7 +141,12 @@ class Guardian:
         print(f"[dns] listening on {d['listen_host']}:{d['listen_port']} -> {', '.join(d['upstreams'])}")
         if self.mode == "gateway" and d.get("redirect_port"):
             self.dns_servers += start_dns(self.resolver, d["listen_host"], int(d["redirect_port"]))
-        if self.gateway is not None:
+        if self.gateway is not None and self.windows:
+            self.gateway.setup(devices=self._device_sets())
+            st = self.gateway.status
+            print(f"[gateway] Windows packet filter active (WinDivert: {', '.join(st.get('handles') or [])}; "
+                  f"hotspot {'on' if st.get('hotspot') else 'off'})")
+        elif self.gateway is not None:
             from .gateway.nfq import NfqRunner
             self.nfq = NfqRunner(self.inspector, queue_num, self.cfg["enforcement"].get("fail_open", False))
             if not self.nfq.bind():                    # bind first: nothing is sent to it yet
@@ -186,7 +201,8 @@ class Guardian:
         """Serving DNS, and (on the Pi) inspecting packets behind a loaded firewall."""
         ok = bool(getattr(self, "dns_servers", None))
         if self.gateway is not None:
-            ok = ok and self.gateway.status.get("applied") and self.nfq is not None and self.nfq.running
+            running = self.nfq.running if self.nfq is not None else getattr(self.gateway, "running", False)
+            ok = ok and self.gateway.status.get("applied") and running
         return bool(ok)
 
     def shutdown(self, handover: bool):
@@ -445,4 +461,9 @@ class Guardian:
             if self.nfq is not None:
                 s["gateway"].update(nfq_running=self.nfq.running, nfq_handled=self.nfq.handled,
                                     nfq_errors=self.nfq.errors)
+            elif hasattr(self.gateway, "stats"):          # Windows: same fields, from WinDivert
+                st = self.gateway.stats
+                s["gateway"].update(nfq_running=self.gateway.running, nfq_handled=st.get("packets", 0),
+                                    nfq_errors=st.get("errors", 0), windivert=dict(st),
+                                    hotspot_devices=sorted(self.gateway.seen_hotspot_clients))
         return s

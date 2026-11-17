@@ -22,6 +22,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 
 SUFFIXES = ("local", "home.arpa", "home", "lan")
@@ -45,7 +46,7 @@ def names(cfg: dict) -> list[str]:
 
 def server_ip(cfg: dict, client_ip: str | None = None) -> str:
     """The address the dashboard name should point to, as seen by this client."""
-    if cfg.get("mode") == "gateway":
+    if cfg.get("mode") == "gateway" and sys.platform.startswith("linux"):
         return (cfg.get("gateway") or {}).get("lan_ip") or "127.0.0.1"
     if client_ip in (None, "", "127.0.0.1", "::1"):
         return "127.0.0.1" if client_ip else _primary_ip()
@@ -67,7 +68,7 @@ def _primary_ip() -> str:
 
 
 def port_suffix(cfg: dict) -> str:
-    if cfg.get("mode") == "gateway":
+    if cfg.get("mode") == "gateway" and sys.platform.startswith("linux"):
         return ""                            # port 80 is redirected to the dashboard
     port = int((cfg.get("web") or {}).get("port", 8080))
     return "" if port == 80 else f":{port}"

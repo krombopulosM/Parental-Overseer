@@ -8,6 +8,7 @@
                                      # switches workers with no gap for updates/restarts
     python run.py --selftest         # check this copy works (run before an update goes live)
     python run.py --diagnostics      # write a diagnostics zip (logs, status, settings) to send for help
+    python run.py --windows-check    # Windows (as administrator): prove blocking works on this PC
 """
 import argparse
 import getpass
@@ -53,6 +54,10 @@ def main():
     ap.add_argument("--selftest", action="store_true", help="check this copy of the program works, then exit")
     ap.add_argument("--diagnostics", nargs="?", const="", metavar="OUT.zip",
                     help="write a diagnostics bundle to send when asking for help, then exit")
+    ap.add_argument("--windows-check", action="store_true",
+                    help="Windows, as administrator: check blocking really works on this PC, then exit")
+    ap.add_argument("--hotspot", type=int, default=0, metavar="SECONDS",
+                    help="with --windows-check: also watch Mobile Hotspot devices for this long")
     ap.add_argument("--include-activity", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--no-anonymise", action="store_true", help=argparse.SUPPRESS)
     # used by the supervisor
@@ -74,6 +79,10 @@ def main():
         capture(data, "supervisor")
         passthrough = ["--no-download"] if args.no_download else []
         sys.exit(Supervisor(os.path.realpath(HERE), data, passthrough).run(adopt_pid=args.adopt, slot=args.slot))
+
+    if args.windows_check:
+        from guardian.wincheck import run as wincheck
+        sys.exit(wincheck(args.config, args.hotspot))
 
     if args.selftest:
         from guardian.selftest import run as selftest

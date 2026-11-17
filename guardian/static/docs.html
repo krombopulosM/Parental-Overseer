@@ -148,10 +148,20 @@ in <code>setup-pi.sh</code>.</p>
   <li>Turn on <b>client / AP isolation</b> on the access point if it has the option (stops devices talking to each other directly).</li>
   <li>Keep the Pi and routers where children can't reach the cables.</li>
 </ol>
-<h3>Trying it on a PC first</h3>
-<p>The same program runs on Windows or Mac in <b>monitor mode</b>: site filtering for anything that uses it as its DNS
-server, the full dashboard, and traffic analysis of that PC. Nothing is blocked inline in monitor mode - that needs the Pi.
-<code>tools/replay.py</code> runs the Pi's inspector over a Wireshark capture so you can see what it would have done.</p>
+<h3>On a Windows PC</h3>
+<p>The same program runs on Windows. In <b>watch-only</b> mode it shows what's happening and what would be blocked.
+Choose <b>Block</b> in the setup wizard (run it as administrator) and it protects <b>this PC</b> - every connection
+goes through the same checks as on the Pi, and its DNS lookups are filtered whatever server they were sent to - and
+<b>devices on its Mobile Hotspot</b> (turn on Settings &gt; Network &gt; Mobile hotspot). It uses the WinDivert packet
+filter driver.</p>
+<ul>
+  <li><b>Check it works:</b> from an administrator command prompt, <code>python run.py --windows-check</code> tries what a
+    child would (adult site, VPN server, Tor, WireGuard, encrypted DNS…) and reports what was blocked.</li>
+  <li><b>On a child's own PC:</b> <code>deploy\windows-install.ps1</code> makes it start with Windows and restart if it
+    stops; give the child a standard (non-administrator) account so they can't stop it.</li>
+  <li><b>Unlike the Pi,</b> it only covers this PC and its hotspot, and if the program isn't running, traffic flows
+    unfiltered - which is why the Pi is the way to protect the whole house.</li>
+</ul>
 </section>
 
 <section id="updates" data-title="Updates">
