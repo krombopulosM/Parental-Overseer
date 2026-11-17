@@ -23,7 +23,7 @@ def sh(*args, cwd=None):
 
 
 def make_upstream(tmp_path, version="1.0.0"):
-    """A git repo shaped like Mini-motorways: the app lives in a subfolder."""
+    """A git repo where the app lives in a subfolder (the `subdir` setting)."""
     repo = tmp_path / "upstream"
     app = repo / "app"
     app.mkdir(parents=True)

@@ -125,6 +125,18 @@ enforcement:
   # the destination was looked up under one of these domains.
   protocol_exempt_domains: [whatsapp.net, whatsapp.com]
 
+# ---------------------------------------------------------------- updates
+# Checked every hour; installed with no interruption (see README "Updates").
+# Change the source in System -> Updates -> "Where updates come from" if you
+# run your own fork.
+updates:
+  enabled: true
+  auto_install: true
+  source: https://github.com/krombopulosM/Parental-Overseer.git
+  branch: main
+  subdir: ""                   # the program is at the top of the repository
+  interval_minutes: 60
+
 # ---------------------------------------------------------------- protections
 # The ways around the filter, each switchable. These are the house-wide settings
 # for every filtered group; a group can override any of them under its own

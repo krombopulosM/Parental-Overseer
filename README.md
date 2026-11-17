@@ -282,7 +282,8 @@ Monitor mode gives you DNS filtering, the full dashboard, and traffic
 accounting for the PC itself. Use it to develop and debug.
 
 ```bash
-cd parental-gateway
+git clone https://github.com/krombopulosM/Parental-Overseer.git
+cd Parental-Overseer
 python -m venv .venv
 .venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
 pip install -r requirements-dev.txt
@@ -336,7 +337,7 @@ ISP router ──eth0── Raspberry Pi ──eth1 (USB adapter)── Wi-Fi ac
 On the Pi (Raspberry Pi OS Bookworm, 64-bit):
 
 ```bash
-git clone <this repo> && cd parental-gateway
+git clone https://github.com/krombopulosM/Parental-Overseer.git && cd Parental-Overseer
 sudo ./deploy/setup-pi.sh
 # unattended:   sudo WAN_IF=eth0 LAN_IF=eth1 ./deploy/setup-pi.sh
 ```
@@ -394,14 +395,15 @@ release is refused by its self-test, and that rollback works.
 updates:
   enabled: true          # check every hour
   auto_install: true     # false: show the update and wait for "Install now"
-  source: https://github.com/you/parental-gateway.git   # an https:// git URL, or a local folder
+  source: https://github.com/krombopulosM/Parental-Overseer.git   # an https:// git URL, or a local folder
   branch: main
-  subdir: ""             # the program's folder inside the repository ("parental-gateway" while it lives here)
+  subdir: ""             # the program's folder inside the repository ("" = the top level)
 ```
 
-`setup-pi.sh` fills `source`, `branch` and `subdir` in from the git checkout it's
-run from, so after moving to a dedicated repository, run it once from a clone of
-that repository (or change the source in **System → Updates → Where updates come from**).
+Updates come from this repository's `main` branch by default. If you run
+`setup-pi.sh` from a clone of a fork, it points updates at that fork instead
+(from the clone's `origin`). You can also change the source in
+**System → Updates → Where updates come from**.
 
 Installed layout (made by `tools/install.py`):
 
@@ -584,7 +586,3 @@ tools/replay.py        run the inspector over a Wireshark capture
 tools/install.py       install / update into the releases layout (used by setup-pi.sh)
 tests/                 unit tests + e2e/
 ```
-
-> This project currently lives inside the Mini-motorways repository folder so
-> it's easy to reach from this session. It isn't part of that game; move it to
-> its own repository before putting it on the Pi.
