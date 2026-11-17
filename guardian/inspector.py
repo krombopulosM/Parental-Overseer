@@ -91,7 +91,7 @@ class FlowLabels:
 
 class _Flow:
     __slots__ = ("created", "last", "base", "segs", "buffered", "pkts", "empty", "got_payload",
-                 "verdict", "udp_first", "saw_stun")
+                 "verdict", "udp_first", "saw_stun", "saw_syn")
 
     def __init__(self, now):
         self.created = self.last = now
@@ -104,6 +104,7 @@ class _Flow:
         self.verdict: Verdict | None = None
         self.udp_first = None
         self.saw_stun = False
+        self.saw_syn = False
 
     def assemble(self) -> bytes:
         out = b""
@@ -144,6 +145,9 @@ class Inspector:
         self._fanout: dict[str, collections.deque] = {}
         self._probes: dict[str, collections.deque] = {}
         self._ttl: dict[str, collections.deque] = {}
+        # Set by an update hand-over: until then, connections this process didn't
+        # see start (and lookups the previous process answered) are handled quietly.
+        self.handover_until = 0.0
 
     def _p(self, ctx, key):
         return prot(self.cfg, ctx.g, key)
@@ -192,6 +196,14 @@ class Inspector:
                severity=None, flow: _Flow | None = None, base=None, ref=None) -> Verdict:
         if pkt.is_udp and action == RESET:
             action = DROP
+        if flow is not None and not flow.saw_syn and time.time() < self.handover_until:
+            # Began under the previous process (mid-handshake at the switch): we can't
+            # judge it fairly, so reset it quietly - the app reconnects at once, and
+            # the new connection is inspected from its first packet.
+            v = Verdict(RESET if pkt.is_tcp else DROP, "connection began before an update", "handover")
+            flow.verdict = v
+            self.stats["handover_reset"] += 1
+            return v
         v = Verdict(action, detail, kind)
         if flow is not None:
             flow.verdict = v
@@ -243,7 +255,15 @@ class Inspector:
 
         if pkt.syn_only:
             fl.base = (pkt.seq + 1) & 0xFFFFFFFF
+            fl.saw_syn = True
             mode = self._consistency_mode(ctx, pkt.dst)
+            if mode != "off" and now < self.handover_until and self.dnscache.resolved_by(ctx.ip, pkt.dst) is None \
+                    and self.dnscache.lookup_db(ctx.ip, pkt.dst) is None and mode == "enforce" and fl.pkts == 1:
+                # Just after an update the previous process may have answered this lookup a
+                # moment ago and its note isn't written yet: hold back the first SYN only.
+                # The device resends it a second later and it's judged normally then.
+                self.stats["handover_wait"] += 1
+                return Verdict(DROP, "waiting for the previous process's DNS answers", "handover")
             if mode != "off" and self.dnscache.resolved_by(ctx.ip, pkt.dst) is None:
                 known = self.dnscache.names_for_ip(pkt.dst)
                 detail = (f"Connected to {pkt.dst}:{pkt.dport} without looking it up through the "

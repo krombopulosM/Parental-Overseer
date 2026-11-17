@@ -45,22 +45,27 @@ class NfqRunner:
         else:
             pkt.drop()
 
-    def start(self):
+    def bind(self, attempts: int = 30) -> bool:
+        """Bind the queue now (before the firewall sends anything to it)."""
         from netfilterqueue import NetfilterQueue   # Linux only; imported lazily
+        self._nfq = NetfilterQueue()
+        for _ in range(attempts):          # a restarting predecessor may still hold the queue
+            try:
+                self._nfq.bind(self.queue_num, self._cb, max_len=8192)
+                self.error = None
+                return True
+            except OSError as e:
+                self.error = f"can't bind queue {self.queue_num}: {e}"
+                time.sleep(0.5)
+        print(f"[nfq] {self.error} - children's connections wait (fail closed) until this is fixed")
+        return False
+
+    def start(self):
+        if getattr(self, "_nfq", None) is None and not self.bind():
+            return
 
         def run():
-            nfq = NetfilterQueue()
-            for attempt in range(30):          # a restarting predecessor may still hold the queue
-                try:
-                    nfq.bind(self.queue_num, self._cb, max_len=8192)
-                    break
-                except OSError as e:
-                    self.error = f"can't bind queue {self.queue_num}: {e}"
-                    time.sleep(0.5)
-            else:
-                print(f"[nfq] {self.error} - children's connections wait (fail closed) until this is fixed")
-                return
-            self.error = None
+            nfq = self._nfq
             self.running = True
             try:
                 nfq.run(block=True)

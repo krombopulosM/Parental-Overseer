@@ -64,6 +64,8 @@ KIND_META: dict[str, tuple] = {
     "dashboard_bruteforce": ("tamper", 75, "none", "a parent mistyping the password"),
     "hidden_router":      ("tamper", 45, "none", "a virtual machine or a phone hotspot"),
     "gateway_offline":    ("tamper", 30, "none", "a power cut or a planned reboot"),
+    "update_installed":   ("info", None, "none", ""),
+    "update_failed":      ("info", None, "none", ""),
     "download_held":      ("download", 50, "none", "a legitimate file from a site the gateway doesn't know"),
     "tor":                ("vpn", 92, "allow_ip", "very rare by accident"),
     "vpn_fingerprint":    ("vpn", 85, "fingerprint", "an ordinary app that happens to share the tunnel's TLS library"),

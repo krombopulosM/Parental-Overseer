@@ -154,6 +154,32 @@ server, the full dashboard, and traffic analysis of that PC. Nothing is blocked 
 <code>tools/replay.py</code> runs the Pi's inspector over a Wireshark capture so you can see what it would have done.</p>
 </section>
 
+<section id="updates" data-title="Updates">
+<h2>Updates</h2>
+<p>The gateway checks for a new version every hour, and <b>System → Updates → Check for updates</b> checks straight
+away. New versions install by themselves (or wait for you to press <b>Install now</b>, if you prefer - the switch is
+on the same panel). An update <b>never interrupts the Wi-Fi or the filtering</b>, not even for a second:</p>
+<ol>
+  <li><b>Downloading</b> - the new version is unpacked into a folder of its own. The running version isn't touched.</li>
+  <li><b>Preparing</b> - its Python packages are set up (reused if nothing changed; otherwise built in the background,
+    which on a Pi can take a few minutes) and its code is pre-compiled so it starts quickly.</li>
+  <li><b>Testing</b> - it has to pass a self-test with your settings. A version that fails is thrown away and you're
+    told why; nothing else happens.</li>
+  <li><b>Switching over</b> - the new version starts <i>alongside</i> the running one. It shares the DNS and dashboard
+    ports, so lookups keep being answered by one or the other throughout. Once it's ready, the firewall is pointed at
+    it in a single step - with every device list already filled in - and the old version finishes what it was doing
+    and exits. Connections that were open carry on.</li>
+</ol>
+<p>If the new version doesn't come up properly, the old one simply carries on. If it starts but then keeps crashing,
+the gateway goes back to the previous version by itself. You can also go back with <b>Go back to version …</b>, which
+is a seamless switch too. The last few versions are kept for this. Settings changes that need a restart (on the setup
+wizard's review page) use the same seamless switch.</p>
+<p class="small">Where updates come from is set under <b>Where updates come from</b>: a git repository (an
+<code>https://</code> address), its branch, and the folder the program lives in. <code>setup-pi.sh</code> fills this in
+from the copy it was run from. Updates only install on a gateway set up with <code>setup-pi.sh</code>; a copy running
+from a development folder (e.g. on your PC) only checks, and is updated with <code>git pull</code>.</p>
+</section>
+
 <section id="tour" data-title="The dashboard, page by page">
 <h2>The dashboard, page by page</h2>
 <dl class="defs">

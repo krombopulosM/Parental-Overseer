@@ -37,8 +37,11 @@ def _q(names) -> str:
 
 
 class NftGateway:
-    def __init__(self, cfg, lists, db, inspector=None):
+    def __init__(self, cfg, lists, db, inspector=None, queue_num: int = 0):
         self.cfg, self.lists, self.db, self.inspector = cfg, lists, db, inspector
+        # Two queue numbers take turns: an updated process binds the other one,
+        # then the firewall is switched over to it in one atomic step.
+        self.queue_num = int(queue_num)
         gw, enf = cfg["gateway"], cfg["enforcement"]
         self.wan = gw["wan_interface"]
         self.lan = list(gw["lan_interfaces"])
@@ -61,7 +64,7 @@ class NftGateway:
     # ------------------------------------------------------------ backend
     def _queue_stmt(self) -> str:
         if self.backend == "nft":
-            return "queue num 0" + (" bypass" if self.fail_open else "")
+            return f"queue num {self.queue_num}" + (" bypass" if self.fail_open else "")
         # iptables picks these up in FORWARD and INPUT (the input chain has its own
         # priority, so "accept" here only hands the packet on to iptables)
         return f"meta mark set {M_INSPECT:#x} accept"       # iptables NFQUEUE picks it up
@@ -187,48 +190,81 @@ table inet {TABLE} {{
 }}
 """
 
-    def _xt_rules(self, fail_open: bool | None = None) -> list[list[str]]:
+    def _xt_rules(self, fail_open: bool | None = None, queue_num: int | None = None) -> list[list[str]]:
         fail_open = self.fail_open if fail_open is None else fail_open
+        queue_num = self.queue_num if queue_num is None else queue_num
         bypass = ["--queue-bypass"] if fail_open else []
         return [  # listed bottom-up because each is inserted at position 1
-            ["-m", "mark", "--mark", hex(M_INSPECT), "-j", "NFQUEUE", "--queue-num", "0", *bypass],
+            ["-m", "mark", "--mark", hex(M_INSPECT), "-j", "NFQUEUE", "--queue-num", str(queue_num), *bypass],
             ["-m", "mark", "--mark", hex(M_RESET), "-j", "DROP"],
             ["-p", "tcp", "-m", "mark", "--mark", hex(M_RESET), "-j", "REJECT", "--reject-with", "tcp-reset"],
         ]
 
+    def _queue_variants(self):
+        return [self._xt_rules(fo, qn)[0] for fo in (False, True) for qn in (0, 1)]
+
     def _install_xt(self):
-        # The fail-open/closed choice can change between runs: never leave the
-        # other variant of the queue rule behind (a stale --queue-bypass rule in
-        # front would quietly turn a fail-closed gateway into a fail-open one).
-        stale = self._xt_rules(not self.fail_open)[0]
+        """Put this process's rules in front, then remove every other variant of the
+        queue rule: the other queue number (the previous process during an update)
+        and the other fail-open setting (a stale --queue-bypass rule would quietly
+        turn a fail-closed gateway into a fail-open one). Packets match the new
+        rule from the moment it's inserted, so there's no gap."""
+        mine = self._xt_rules()
         for chain in ("FORWARD", "INPUT"):
-            while system.run(["iptables", "-D", chain, *stale], check=False).returncode == 0:
-                pass
-            for rule in self._xt_rules():
+            for rule in mine:
                 if system.run(["iptables", "-C", chain, *rule], check=False).returncode != 0:
                     system.run(["iptables", "-I", chain, "1", *rule])
+            for rule in self._queue_variants():
+                if rule == mine[0]:
+                    continue
+                while system.run(["iptables", "-D", chain, *rule], check=False).returncode == 0:
+                    pass
 
     def _remove_xt(self):
         for chain in ("FORWARD", "INPUT"):
-            for rule in self._xt_rules() + self._xt_rules(not self.fail_open)[:1]:
+            for rule in self._xt_rules()[1:] + self._queue_variants():
                 while system.run(["iptables", "-D", chain, *rule], check=False).returncode == 0:
                     pass
 
     # ------------------------------------------------------------ lifecycle
-    def setup(self):
+    def setup(self, devices: dict | None = None):
+        """Load the complete ruleset - including every device and address list -
+        in ONE atomic nftables transaction. There's never a moment with the rules
+        loaded but the lists empty (adults treated as children, paused devices let
+        through), and during an update the previous process's ruleset is replaced
+        by this one in a single step.
+
+        devices: {"trusted": [...], "paused": [...], "udp_ok": [...], "admin": [...], "open": [...]}"""
         system.sysctl("net/netfilter/nf_conntrack_acct", "1")     # per-connection byte counters
         if not self.ipv6:
             system.sysctl("net/ipv6/conf/all/forwarding", "0")
         self.backend = self.detect_backend()
-        system.nft(f"table inet {TABLE}\ndelete table inet {TABLE}\n" + self.render())
-        if self.backend == "xt":
-            self._install_xt()
-        self._sets = {}
-        self._admin_open = None
-        self.sync_ip_sets(force=True)
+        devices = devices or {}
+        want = {f"{k}_macs": frozenset(devices.get(k) or ()) for k in ("trusted", "paused", "udp_ok", "admin", "open")}
+        script = f"table inet {TABLE}\ndelete table inet {TABLE}\n" + self.render()
+        for name, macs in want.items():
+            script += self._replace_set(name, sorted(macs))
+        admin_open = not want["admin_macs"] or not self.cfg["gateway"].get("admin_only_dashboard", True)
+        script += (f"add rule inet {TABLE} admin_access accept\n" if admin_open else
+                   f"add rule inet {TABLE} admin_access ether saddr @admin_macs accept\n")
+        script += self._ip_sets_script()
+        dyn = []
         if self.db is not None:
             for b in self.db.dyn_blocks():
-                self._add_dyn(b["ip"], int(b["expires"] - time.time()))
+                secs = int(b["expires"] - time.time())
+                if secs > 0:
+                    fam = "dyn_v6" if ":" in b["ip"] else "dyn_v4"
+                    script += f"add element inet {TABLE} {fam} {{ {b['ip']} timeout {secs}s }}\n"
+                    dyn.append(b["ip"])
+        with self._lock:
+            system.nft(script)
+            self._sets = dict(want)
+            self._admin_open = admin_open
+            self._lists_version = self.lists.version if self.lists is not None else -1
+        if self.inspector is not None:
+            self.inspector.dyn_blocked.update(dyn)
+        if self.backend == "xt":
+            self._install_xt()
         # Only start routing once the rules are in place: the Pi boots with
         # forwarding off, so there is never an unfiltered window at startup.
         system.sysctl("net/ipv4/ip_forward", "1")
@@ -250,8 +286,13 @@ table inet {TABLE} {{
             script += f"add element inet {TABLE} {name} {{ {', '.join(elements[i:i + chunk])} }}\n"
         return script
 
-    def sync_device_sets(self, trusted, paused, udp_ok, admin, open_=()):
-        """Push MAC sets; returns the MACs whose state changed (their flows get reset)."""
+    def sync_device_sets(self, trusted, paused, udp_ok, admin, open_=(), force=False):
+        """Push MAC sets; returns the MACs whose state changed (their flows get reset).
+        force: rewrite every set (after an update hand-over) without resetting anyone."""
+        if force:
+            with self._lock:
+                self._sets = {}
+                self._admin_open = None
         want = {"trusted_macs": frozenset(trusted), "paused_macs": frozenset(paused),
                 "udp_ok_macs": frozenset(udp_ok), "admin_macs": frozenset(admin),
                 "open_macs": frozenset(open_)}
@@ -260,7 +301,7 @@ table inet {TABLE} {{
         with self._lock:
             for name, macs in want.items():
                 if self._sets.get(name) != macs:
-                    old = self._sets.get(name, frozenset())
+                    old = self._sets.get(name, macs if force else frozenset())
                     if name != "admin_macs":
                         changed_macs |= old ^ macs
                     script += self._replace_set(name, sorted(macs))
@@ -275,16 +316,22 @@ table inet {TABLE} {{
                 system.nft(script)
         return changed_macs
 
-    def sync_ip_sets(self, force=False):
-        if not force and self.lists.version == self._lists_version:
-            return False
+    def _ip_sets_script(self) -> str:
         script = ""
+        if self.lists is None:
+            return script
         for lname in ("vpn", "doh"):
             sets = [self.lists.ip_sets.get(n) for n in ((lname, "tor") if lname == "vpn" else (lname,))]
             v4 = sorted({c for s in sets if s for c in s.cidrs(4)})
             v6 = sorted({c for s in sets if s for c in s.cidrs(6)})
             script += self._replace_set(f"{lname}_v4", v4)
             script += self._replace_set(f"{lname}_v6", v6)
+        return script
+
+    def sync_ip_sets(self, force=False):
+        if not force and self.lists.version == self._lists_version:
+            return False
+        script = self._ip_sets_script()
         with self._lock:
             system.nft(script)
             self._lists_version = self.lists.version

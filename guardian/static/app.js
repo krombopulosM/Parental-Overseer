@@ -787,6 +787,87 @@ function renderProtections(p) {
   });
 }
 
+// ------------------------------------------------------------------ updates panel
+const UPD_ICON = { up_to_date: "✓", installed: "✓", available: "⬆", failed: "⚠", not_configured: "ⓘ", checking: "…", installing: "…", switching: "…", idle: "ⓘ" };
+let updPoll = null;
+function updatesEditing() {
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest("#upd-source-form"));
+}
+function fmtWhen(ts) { return ts ? new Date(ts * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : ""; }
+function renderUpdates(u) {
+  const el = $("#sys-updates");
+  if (!el || !u) return;
+  const busy = u.busy || ["installing", "switching", "checking"].includes(u.status);
+  const cur = u.current || {};
+  const ver = v => `${esc(v.version || "?")}${v.commit ? ` <span class="faint mono">${esc(v.commit.slice(0, 7))}</span>` : ""}`;
+  const stepIdx = u.steps.findIndex(([k]) => k === u.step);
+  const tone = { up_to_date: "ok", installed: "ok", available: "info", failed: "warn" }[u.status] || "";
+  let main = `<div class="upd-status ${tone}"><span class="upd-icon" aria-hidden="true">${busy ? `<span class="spinner small"></span>` : (UPD_ICON[u.status] || "ⓘ")}</span>
+    <div><b>${esc(u.message || (u.status === "up_to_date" ? "You have the newest version." : "Updates"))}</b>
+      <div class="small muted">Running version ${ver(cur)}${u.last_check ? ` · checked ${esc(ago(u.last_check))}` : ""}${u.settings.enabled && u.next_check && !busy ? ` · next check ${esc(fmtWhen(u.next_check))}` : ""}</div>
+      ${u.error ? `<div class="small error">${esc(u.error)}</div>` : ""}</div></div>`;
+  if (busy && u.status !== "checking") {
+    main += `<ol class="upd-steps">${u.steps.map(([k, label], i) => `<li class="${i < stepIdx ? "done" : i === stepIdx ? "on" : ""}">${esc(label)}</li>`).join("")}</ol>
+      <p class="small muted">Wi-Fi, filtering and the dashboard keep working while this happens. The new version only takes over once it has passed its self-test.</p>`;
+  }
+  if (u.status === "available" && u.latest && !busy) {
+    main += `<div class="upd-latest"><div><b>Version ${esc(u.latest.version)}</b>${u.latest.changes && u.latest.changes.length ? `
+      <ul class="small">${u.latest.changes.slice(0, 8).map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}</div>
+      ${u.managed ? `<button class="primary" id="upd-install">Install now</button>` : ""}</div>
+      ${u.managed && u.settings.auto_install ? `<p class="small muted">It will also install by itself within the hour.</p>` : ""}`;
+  }
+  if (!u.managed) {
+    main += `<p class="small muted">This copy runs from a development folder, so it's only checked, not updated - use <span class="mono">git pull</span>.
+      On the Raspberry Pi (installed with setup-pi.sh) updates install themselves.</p>`;
+  }
+  const s = u.settings;
+  const tog = (id, on, label, help) => `<label class="wz-toggle"><input type="checkbox" id="${id}" ${on ? "checked" : ""}><span class="sw" aria-hidden="true"></span>
+    <span><span class="t">${esc(label)}</span><span class="d">${esc(help)}</span></span></label>`;
+  const hist = (u.history || []).slice(0, 5);
+  el.innerHTML = `${main}
+    <div class="upd-settings">
+      ${tog("upd-enabled", s.enabled, "Check for updates every hour", "Only asks whether there's a newer version - nothing changes unless one is installed.")}
+      ${tog("upd-auto", s.auto_install, "Install updates automatically", "With no interruption: the new version starts alongside the running one and takes over only once it's ready. Off: you'll see the update here and choose when.")}
+    </div>
+    <details class="upd-source" ${u.status === "not_configured" ? "open" : ""}><summary>Where updates come from</summary>
+      <form id="upd-source-form" class="upd-form">
+        <label>Git repository <input id="upd-src" value="${esc(s.source)}" placeholder="https://github.com/you/parental-gateway.git" autocapitalize="off" spellcheck="false"></label>
+        <div class="row"><label>Branch <input id="upd-branch" value="${esc(s.branch)}" autocapitalize="off" spellcheck="false"></label>
+        <label>Folder in the repository <input id="upd-subdir" value="${esc(s.subdir)}" placeholder="(top level)" autocapitalize="off" spellcheck="false"></label></div>
+        <div class="row"><button class="primary" type="submit">Save</button><span class="small muted">Only https:// addresses or a folder on this machine.</span></div>
+      </form></details>
+    ${u.previous && u.managed ? `<div class="row upd-rollback"><button id="upd-rollback">Go back to version ${esc(u.previous.version || "")}</button>
+      <span class="small muted">Also seamless - and the supervisor does this by itself if a new version keeps failing.</span></div>` : ""}
+    ${hist.length ? `<h3 class="small muted upd-h">Recent updates</h3><ul class="upd-history">${hist.map(h => `<li class="${h.ok ? "ok" : "bad"}">
+      <span>${h.ok ? "✓" : "✗"}</span><span>${h.ok ? (h.reason === "rollback" ? "Went back to" : "Updated to") : "Didn't install"} <b>${esc((h.to || {}).version || "?")}</b>
+      ${h.from && h.from.version ? `<span class="muted">from ${esc(h.from.version)}</span>` : ""}
+      <span class="muted small">· ${esc(fmtWhen(h.at))}${h.manual ? " · by you" : " · automatic"}</span>
+      ${h.error ? `<div class="small muted">${esc(h.error)}</div>` : ""}</span></li>`).join("")}</ul>` : ""}`;
+  const save = async body => { try { renderUpdates(await post("/api/updates/settings", body)); toast("Saved"); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, 5000); } };
+  $("#upd-enabled").onchange = e => save({ enabled: e.target.checked });
+  $("#upd-auto").onchange = e => save({ auto_install: e.target.checked });
+  $("#upd-source-form").onsubmit = e => { e.preventDefault(); document.activeElement.blur(); save({ source: $("#upd-src").value, branch: $("#upd-branch").value || "main", subdir: $("#upd-subdir").value }); };
+  const inst = $("#upd-install");
+  if (inst) inst.onclick = async () => {
+    inst.disabled = true;
+    try { renderUpdates(await post("/api/updates/install")); pollUpdates(); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, 5000); inst.disabled = false; }
+  };
+  const rb = $("#upd-rollback");
+  if (rb) rb.onclick = async () => {
+    if (!confirm(`Go back to version ${u.previous.version}? Filtering carries on throughout.`)) return;
+    try { renderUpdates(await post("/api/updates/rollback")); pollUpdates(); } catch (e) { if (!(e instanceof AuthError)) toast(e.message, 5000); }
+  };
+  if (busy) pollUpdates();
+}
+function pollUpdates() {
+  clearTimeout(updPoll);
+  updPoll = setTimeout(async () => {
+    if (state.view !== "system") return;
+    try { renderUpdates(await api("/api/updates")); } catch (_) { pollUpdates(); }
+  }, 1500);
+}
+
 views.system = {
   shell: () => `
     <div class="page-head"><div><h1>System</h1></div>
@@ -794,6 +875,9 @@ views.system = {
     <div class="panel" id="address"><div class="panel-head"><h2>Dashboard address</h2>
       <div class="tools"><button class="small" id="sys-rename">Change the name</button></div></div>
       <div class="panel-body" id="sys-address"></div></div>
+    <div class="panel" id="updates"><div class="panel-head"><h2>Updates</h2>
+      <div class="tools"><button class="small" id="upd-check">Check for updates</button></div></div>
+      <div class="panel-body" id="sys-updates"><div class="muted small">Loading…</div></div></div>
     <div class="tiles" id="sys-tiles"></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h2>Components</h2></div><div class="panel-body" id="sys-comp"></div></div>
@@ -804,10 +888,17 @@ views.system = {
     </div>
     <div class="panel"><div class="panel-head"><h2>Blocklists</h2><div class="tools small muted" id="sys-lists-note"></div></div><div class="scroll" id="sys-lists"></div></div>
     <div class="panel"><div class="panel-head"><h2>Inspector counters</h2></div><div class="panel-body" id="sys-insp"></div></div>`,
-  init() {
+  async init() {
     $("#sys-wizard").onclick = () => openWizard(1).catch(e => toast(e.message, 4000));
     $("#sys-rename").onclick = () => openWizard(1).catch(e => toast(e.message, 4000));
     api("/api/address").then(a => { $("#sys-address").innerHTML = addressCard(a); bindAddressCard($("#sys-address")); });
+    $("#upd-check").onclick = async () => {
+      const b = $("#upd-check"); b.disabled = true; b.textContent = "Checking…";
+      try { renderUpdates(await post("/api/updates/check")); }
+      catch (e) { if (!(e instanceof AuthError)) toast(e.message, 4000); }
+      finally { b.disabled = false; b.textContent = "Check for updates"; }
+    };
+    renderUpdates(await api("/api/updates"));
     $("#sys-update").onclick = () => act(() => post("/api/system/update-lists"), "Updating lists in the background…");
     $("#pw-form").onsubmit = e => {
       e.preventDefault();
@@ -816,6 +907,7 @@ views.system = {
     };
   },
   async refresh() {
+    if (!updatesEditing()) api("/api/updates").then(renderUpdates).catch(() => { });
     const s = await api("/api/system");
     $("#sys-tiles").innerHTML = [
       [s.mode === "gateway" ? "Gateway" : "Monitor", "Mode"],

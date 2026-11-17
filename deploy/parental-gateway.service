@@ -4,12 +4,19 @@ After=network-online.target dnsmasq.service
 Wants=network-online.target
 
 [Service]
+# The supervisor keeps the gateway running and switches to new versions with
+# no gap (updates, rollbacks, settings that need a restart). It re-launches
+# itself from each new version, so this file never needs to change for updates.
+Environment=GUARDIAN_DATA_DIR=/opt/parental-gateway/data
 WorkingDirectory=/opt/parental-gateway
-ExecStart=/opt/parental-gateway/.venv/bin/python /opt/parental-gateway/run.py
+ExecStart=/opt/parental-gateway/current/.venv/bin/python /opt/parental-gateway/current/run.py --supervise
+# Stop: the supervisor tells the gateway to stop; anything left is killed after the timeout.
+KillMode=mixed
+TimeoutStopSec=40
 Restart=always
 RestartSec=2
-# The firewall stays in place while the service restarts, and new web
-# connections from filtered devices wait (fail closed) until it's back.
+# If the service is stopped, the firewall stays in place and filtered devices'
+# new web connections wait (fail closed) until it's back.
 User=root
 Nice=-5
 

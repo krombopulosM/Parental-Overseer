@@ -87,6 +87,20 @@ class FlowMonitor:
         self.lock = threading.Lock()
         self.last_tick = 0.0
         self.error = None
+        self._resume: dict[str, dict] = {}
+
+    def resume_from_db(self, max_age: float = 600) -> int:
+        """Pick up the byte counters the previous process last saved for connections
+        that are still open, so they aren't counted twice after a restart/update."""
+        if self.db is None:
+            return 0
+        import time as _t
+        rows = self.db.query("SELECT flow_key, start, bytes_up, bytes_down, pkts_up, pkts_down FROM flows "
+                             "WHERE ended=0 AND last>=?", (_t.time() - max_age,))
+        for r in rows:
+            key = r["flow_key"].rsplit("|", 1)[0]
+            self._resume[key] = dict(r)
+        return len(rows)
 
     def start(self):
         self.backend.start()
@@ -139,6 +153,11 @@ class FlowMonitor:
                         self._skip.add(s.key)
                         continue
                     rec = self.active[s.key] = FlowRec(s, ctx, now)
+                    prev = self._resume.pop(s.key, None)
+                    if prev is not None:
+                        rec.flow_key, rec.start = prev["flow_key"], prev["start"]
+                        rec.bytes_up, rec.bytes_down = prev["bytes_up"], prev["bytes_down"]
+                        rec.pkts_up, rec.pkts_down = prev["pkts_up"], prev["pkts_down"]
                 d_up = s.bytes_up - rec.bytes_up if s.bytes_up >= rec.bytes_up else s.bytes_up
                 d_dn = s.bytes_down - rec.bytes_down if s.bytes_down >= rec.bytes_down else s.bytes_down
                 p_up = s.pkts_up - rec.pkts_up if s.pkts_up >= rec.pkts_up else s.pkts_up

@@ -14,16 +14,19 @@
 set -euo pipefail
 
 APP_DIR=${APP_DIR:-/opt/parental-gateway}
-LOCAL_CFG="$APP_DIR/config.local.yaml"
+DATA_DIR="$APP_DIR/data"
+LOCAL_CFG="$DATA_DIR/config.local.yaml"
+[ -f "$LOCAL_CFG" ] || { [ -f "$APP_DIR/config.local.yaml" ] && LOCAL_CFG_OLD="$APP_DIR/config.local.yaml"; }
 
 # ---- which port is which? -------------------------------------------------
 # Defaults: what a previous run chose, else the interface carrying the default
 # route (internet side) and the first other wired interface (home side).
 prev() {  # value of "key: x", "key: [x]" or "key:\n  - x" in the existing local config
-  [ -f "$LOCAL_CFG" ] || return 0
+  local f="$LOCAL_CFG"; [ -f "$f" ] || f="${LOCAL_CFG_OLD:-}"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
   awk -v k="$1" '
     want { if ($1 == "-") { print $2; exit } else exit }
-    $1 == k":" { v = $2; gsub(/[][,]/, "", v); if (v != "") { print v; exit } want = 1 }' "$LOCAL_CFG"
+    $1 == k":" { v = $2; gsub(/[][,]/, "", v); if (v != "") { print v; exit } want = 1 }' "$f"
 }
 ROUTE_IF=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
 WIRED=$(for d in /sys/class/net/*; do n=${d##*/}; [ "$n" = lo ] && continue
@@ -62,21 +65,34 @@ LAN_NET=$(python3 -c "import ipaddress; print(ipaddress.ip_interface('$LAN_IP/$L
 echo "==> Installing packages"
 apt-get update -q
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-venv python3-dev build-essential \
-  libnetfilter-queue-dev nftables conntrack dnsmasq tcpdump avahi-daemon avahi-utils
+  libnetfilter-queue-dev nftables conntrack dnsmasq tcpdump avahi-daemon avahi-utils git
 
-echo "==> Installing app to $APP_DIR"
+# An installation from before seamless updates runs without the supervisor: stop
+# it once (the firewall stays up, so filtered devices wait) - this is the only
+# time setup ever interrupts the gateway. With the supervisor running, a re-run
+# is installed like any update: alongside, then handed over with no gap.
+SUPERVISED=0
+if systemctl is-active -q parental-gateway 2>/dev/null; then
+  if grep -q -- "--supervise" /etc/systemd/system/parental-gateway.service 2>/dev/null; then
+    SUPERVISED=1
+  else
+    echo "==> Stopping the old service once to move it to the new layout"
+    systemctl stop parental-gateway
+  fi
+fi
+
+echo "==> Installing app to $APP_DIR (releases/, current, data/)"
 mkdir -p "$APP_DIR"
-tar -C "$SRC" --exclude=.venv --exclude='guardian.db*' --exclude=config.local.yaml \
-    --exclude=blocklists/cache --exclude=__pycache__ -cf - . | tar -C "$APP_DIR" -xf -
-python3 -m venv "$APP_DIR/.venv"
-"$APP_DIR/.venv/bin/pip" install -q --upgrade pip
-"$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt" -r "$APP_DIR/requirements-gateway.txt"
+INSTALL_OUT=$(python3 "$SRC/tools/install.py" --root "$APP_DIR" --gateway --python /usr/bin/python3 \
+              $([ "$SUPERVISED" = 1 ] && echo --switch) | tee /dev/stderr | tail -1)
+PY="$APP_DIR/current/.venv/bin/python"
+export GUARDIAN_DATA_DIR="$DATA_DIR"
 
 echo "==> Writing $LOCAL_CFG (internet: $WAN_IF, home: $LAN_IF)"
 # Merge, don't overwrite: the dashboard's setup wizard keeps its choices in the same file.
 WAN_IF="$WAN_IF" LAN_IF="$LAN_IF" LAN_IP="$LAN_IP" LAN_NET="$LAN_NET" LOCAL_CFG="$LOCAL_CFG" \
-"$APP_DIR/.venv/bin/python" - <<'PY'
-import os, yaml
+INSTALL_OUT="$INSTALL_OUT" "$PY" - <<'PY'
+import json, os, yaml
 path = os.environ["LOCAL_CFG"]
 cfg = {}
 if os.path.exists(path):
@@ -90,6 +106,14 @@ web.setdefault("port", 8080)
 gw = cfg.setdefault("gateway", {})
 gw.update(wan_interface=os.environ["WAN_IF"], lan_interfaces=[os.environ["LAN_IF"]],
           lan_ip=os.environ["LAN_IP"], lan_subnets=[os.environ["LAN_NET"]])
+# Updates come from where this copy came from (if it's a git checkout), unless set already.
+try:
+    origin = json.loads(os.environ.get("INSTALL_OUT") or "{}").get("origin") or {}
+except ValueError:
+    origin = {}
+upd = cfg.setdefault("updates", {})
+if origin.get("source") and not upd.get("source"):
+    upd.update(source=origin["source"], branch=origin.get("branch") or "main", subdir=origin.get("subdir") or "")
 with open(path + ".tmp", "w") as fh:
     fh.write("# Machine-specific settings - written by setup-pi.sh and the dashboard's setup wizard.\n"
              "# Deep-merged over config.yaml.\n")
@@ -157,7 +181,7 @@ if [ -f "$AVAHI_CONF" ]; then
 fi
 systemctl enable -q avahi-daemon 2>/dev/null || true
 systemctl restart avahi-daemon 2>/dev/null || true
-DASH_NAME=$("$APP_DIR/.venv/bin/python" - "$APP_DIR" <<'PY' 2>/dev/null || echo family
+DASH_NAME=$("$PY" - "$APP_DIR/current" <<'PY' 2>/dev/null || echo family
 import sys; sys.path.insert(0, sys.argv[1])
 from guardian.config import load_config
 from guardian.localname import base_name
@@ -173,26 +197,27 @@ if ss -lunp 2>/dev/null | grep -q "systemd-resolve.*:53 "; then
 fi
 
 echo "==> Service"
-sed "s#/opt/parental-gateway#$APP_DIR#g" "$APP_DIR/deploy/parental-gateway.service" \
+sed "s#/opt/parental-gateway#$APP_DIR#g" "$APP_DIR/current/deploy/parental-gateway.service" \
   > /etc/systemd/system/parental-gateway.service
 systemctl daemon-reload
 systemctl enable -q parental-gateway
 
-if ! "$APP_DIR/.venv/bin/python" - "$APP_DIR" <<'PY'
+if ! "$PY" - "$APP_DIR/current" <<'PY'
 import sys; sys.path.insert(0, sys.argv[1])
-from guardian.config import load_config, resolve_path
+from guardian.config import load_config, resolve_data_path
 from guardian.db import DB
 from guardian.auth import Auth
 cfg = load_config(sys.argv[1] + "/config.yaml")
-db = DB(resolve_path(cfg, cfg["database"]))
+db = DB(resolve_data_path(cfg, cfg["database"]))
 ok = Auth(db).has_password(); db.close(); sys.exit(0 if ok else 1)
 PY
 then
   echo "==> Choose the dashboard password"
-  (cd "$APP_DIR" && .venv/bin/python run.py --set-password)
+  (cd "$APP_DIR/current" && "$PY" run.py --set-password)
 fi
 
-systemctl restart parental-gateway
+# Already supervised: the new version took over above, nothing to restart.
+[ "$SUPERVISED" = 1 ] || systemctl restart parental-gateway
 sleep 3
 systemctl --no-pager --lines=8 status parental-gateway || true
 
@@ -204,6 +229,8 @@ Done. Open the dashboard from any device at home:
     (or http://$DASH_NAME.home.arpa, or http://$LAN_IP)
 
 The name can be changed in the dashboard's setup wizard.
+Updates are checked every hour and installed with no interruption
+(System -> Updates in the dashboard).
 
 Finish the setup:
   1. Put your Wi-Fi access point in "access point / bridge" mode (no DHCP or NAT of its own)

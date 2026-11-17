@@ -347,11 +347,76 @@ The script:
   route is the internet side);
 - installs everything;
 - gives the LAN port `192.168.50.1` and runs DHCP on it;
-- creates a `parental-gateway` systemd service;
+- installs into `/opt/parental-gateway` in a versioned layout and creates a
+  `parental-gateway` systemd service that runs the supervisor (for
+  [updates with no downtime](#updates-no-downtime));
 - announces the dashboard's name on the home network (Avahi / mDNS);
 - asks you for the dashboard password.
 
 Open the dashboard from any device at home: **http://family.local**
+
+## Updates (no downtime)
+
+The gateway checks for updates every hour; **System → Updates → Check for
+updates** checks now. New versions install automatically (or on **Install now**
+if you turn automatic installs off). Wi-Fi and filtering are never interrupted:
+
+1. **Download** the new version into `releases/<version>-<commit>`; the running one isn't touched.
+2. **Prepare**: reuse the Python environment if the requirements are unchanged,
+   otherwise build a new one in the background (pip compiles `netfilterqueue`);
+   pre-compile the code.
+3. **Self-test** (`run.py --selftest`) against this machine's settings. A failure
+   stops the update; nothing else happens.
+4. **Hand over**, run by the supervisor (the process the service runs):
+   - the new worker starts alongside the old one and shares the DNS and dashboard
+     ports (`SO_REUSEPORT`, with a one-line BPF program that steers new traffic to
+     the newest socket, so nothing queued on the old one is lost);
+   - it binds the *other* packet queue and swaps the firewall to it in one atomic
+     nftables transaction, with every device and address list already filled in;
+   - the old worker answers what's already queued to it, then exits. The new one
+     takes over the once-only jobs (traffic accounting, the behaviour detector,
+     LAN watch, list downloads, update checks) through a lock, carries on byte
+     counts from where the old one left off, and reloads the DNS answers it had
+     handed out (now kept in the database).
+
+If the new version never becomes ready, the old one takes the firewall back and
+carries on. If it keeps crashing after taking over, the supervisor goes back to
+the previous release by itself. **Go back to version …** does the same on demand.
+The supervisor then re-launches itself from the new release, so it's updated too.
+Settings that need a restart use the same hand-over.
+
+The end-to-end test runs an update while a child's device and the parent's
+laptop make lookups and connections non-stop: none fail. Blocked sites never
+resolve and a VPN never gets out during the switch. It also checks that a broken
+release is refused by its self-test, and that rollback works.
+
+```yaml
+updates:
+  enabled: true          # check every hour
+  auto_install: true     # false: show the update and wait for "Install now"
+  source: https://github.com/you/parental-gateway.git   # an https:// git URL, or a local folder
+  branch: main
+  subdir: ""             # the program's folder inside the repository ("parental-gateway" while it lives here)
+```
+
+`setup-pi.sh` fills `source`, `branch` and `subdir` in from the git checkout it's
+run from, so after moving to a dedicated repository, run it once from a clone of
+that repository (or change the source in **System → Updates → Where updates come from**).
+
+Installed layout (made by `tools/install.py`):
+
+```
+/opt/parental-gateway/
+  current -> releases/2.1.0-ab12cd3     what the service runs
+  releases/<version>-<commit>/         one folder per version (the newest few are kept)
+  venvs/<hash>/                        Python environments, shared while requirements match
+  data/                                guardian.db, config.local.yaml, list cache, update cache
+```
+
+Re-running `setup-pi.sh` on an installation that's already supervised is itself
+a seamless update. An installation from before this layout is migrated once:
+its database and settings move to `data/`, and the service is restarted that one
+time. The firewall stays up meanwhile, so it fails closed.
 
 ## The dashboard address
 
@@ -460,7 +525,7 @@ Categories, lists, detector thresholds and schedules are all in
 ## Tests
 
 ```bash
-pytest -q                               # 169 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
+pytest -q                               # 180 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
@@ -481,7 +546,7 @@ unlisted Tor relays, and a CDN-style tunnel held as an unknown destination.
 It also drives the setup wizard: interfaces detected, a category change taking
 effect live for the kid, and a real self-restart that must come back as the
 same process with the inspector running and no stale fail-open rule.
-It switches protections per group on the live gateway (Tor off for the console only, "allow everything" still blocking VPN ports until VPNs are switched off). It also opens the dashboard by name over port 80 (and checks a child can find the name but not open it). **193 checks pass.** Finally it kills the service and
+It switches protections per group on the live gateway (Tor off for the console only, "allow everything" still blocking VPN ports until VPNs are switched off). It also opens the dashboard by name over port 80 (and checks a child can find the name but not open it). It runs the gateway the way the Pi does (installed, under the supervisor) and updates it from a git repository while the network is in use, with zero failed lookups or connections. **218 checks pass.** Finally it kills the service and
 confirms kids' access fails closed while the parent is unaffected. (The IPv6 router check is
 skipped on kernels booted without IPv6.)
 
@@ -508,10 +573,15 @@ guardian/
   gateway/             nftables ruleset, NFQUEUE runner
   lists.py             blocklist + VPN-server list downloads
   settings.py          what the setup wizard can change: presets, config.local.yaml, live apply
+  supervisor.py        runs the gateway; switches versions with no gap, rolls back, restarts on crash
+  updater.py           hourly update check, staging, environments, self-test, history
+  handover.py          shared ports, socket steering, the once-only-jobs lock
+  selftest.py          `run.py --selftest`: a new version must pass before it goes live
   environment.py       platform / interface / readiness detection for the wizard
   webapp.py, static/   dashboard (static/wizard.js: the setup wizard)
 deploy/                setup-pi.sh, systemd unit
 tools/replay.py        run the inspector over a Wireshark capture
+tools/install.py       install / update into the releases layout (used by setup-pi.sh)
 tests/                 unit tests + e2e/
 ```
 

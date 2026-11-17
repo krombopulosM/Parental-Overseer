@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.request
 
-from .config import resolve_path
+from .config import resolve_data_path, resolve_path
 from .iplist import IPSet, is_public
 
 USER_AGENT = "parental-gateway/1.0 (+home network filter)"
@@ -108,7 +108,7 @@ def _strip_port(s: str) -> str:
 class ListManager:
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self.cache_dir = resolve_path(cfg, cfg.get("lists_cache_dir", "blocklists/cache"))
+        self.cache_dir = resolve_data_path(cfg, cfg.get("lists_cache_dir", "blocklists/cache"))
         os.makedirs(self.cache_dir, exist_ok=True)
         self.categories: dict[str, DomainMatcher] = {}
         self.ip_sets: dict[str, IPSet] = {}

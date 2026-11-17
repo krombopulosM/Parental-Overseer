@@ -1,12 +1,13 @@
 """Wires every component together and runs the background loops."""
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
 
 from .alerts import AlertSink
-from .config import resolve_path
+from .config import resolve_data_path
 from .db import DB
 from .detector import Detector
 from .dnscache import DnsCache
@@ -18,7 +19,15 @@ from .protections import on as prot
 from .resolver import DnsTunnelDetector, GuardianResolver, QueryStats, start_dns
 from .schedule import Scheduler
 
-VERSION = "2.0"
+def _read_version() -> str:
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "VERSION")) as fh:
+            return fh.read().strip()
+    except OSError:
+        return "0"
+
+
+VERSION = _read_version()
 
 
 class Guardian:
@@ -28,14 +37,15 @@ class Guardian:
         if self.mode == "gateway" and not sys.platform.startswith("linux"):
             raise SystemExit("gateway mode needs Linux (the Raspberry Pi). Use mode: monitor on this machine.")
         self.started_at = time.time()
-        self.db = DB(resolve_path(cfg, cfg["database"]))
+        self.db = DB(resolve_data_path(cfg, cfg["database"]))
         self.alerts = AlertSink(self.db, echo=True)
         self.identity = Identity(cfg)
         self.lists = ListManager(cfg)
         self.lists.load()
         self.policy = Policy(cfg, self.db, self.lists, self.identity, self.alerts)
         self.scheduler = Scheduler(self.db, self.policy)
-        self.dnscache = DnsCache(cfg["enforcement"]["consistency_grace"])
+        self.dnscache = DnsCache(cfg["enforcement"]["consistency_grace"], db=self.db)
+        self.dnscache.load()
         self.stats = QueryStats()
         self.tunnel = DnsTunnelDetector(cfg["dns"]["tunnel_detection"], self.alerts)
         self.resolver = GuardianResolver(cfg, self.policy, self.lists, self.dnscache, self.db,
@@ -83,6 +93,8 @@ class Guardian:
             from .lanwatch import LanWatch
             self.lanwatch = LanWatch(cfg, self.db, self.policy, self.identity, self.alerts,
                                      on_change=self.device_changed)
+        from .updater import Updater
+        self.updater = Updater(cfg, self.db, self.alerts)
         self.mdns = None
         if self.mode == "gateway":
             from .localname import MdnsPublisher
@@ -106,8 +118,14 @@ class Guardian:
         return None
 
     # ------------------------------------------------------------ lifecycle
-    def start(self, download_lists: bool = True):
-        self._check_offline_gap()
+    def start(self, download_lists: bool = True, queue_num: int = 0, takeover: bool = False):
+        """Start serving. With takeover=True another version of this program is still
+        running (an update): we share its ports, take over packet inspection in one
+        atomic firewall switch, and take over the once-only jobs when it exits."""
+        self.takeover = takeover
+        self.queue_num = queue_num
+        if takeover:
+            self.inspector.handover_until = time.time() + 20
         d = self.cfg["dns"]
         self.dns_servers = start_dns(self.resolver, d["listen_host"], int(d["listen_port"]))
         print(f"[dns] listening on {d['listen_host']}:{d['listen_port']} -> {', '.join(d['upstreams'])}")
@@ -115,16 +133,40 @@ class Guardian:
             self.dns_servers += start_dns(self.resolver, d["listen_host"], int(d["redirect_port"]))
         if self.gateway is not None:
             from .gateway.nfq import NfqRunner
-            self.gateway.setup()
-            self.sync_gateway()
-            self.nfq = NfqRunner(self.inspector, 0, self.cfg["enforcement"].get("fail_open", False))
+            self.nfq = NfqRunner(self.inspector, queue_num, self.cfg["enforcement"].get("fail_open", False))
+            if not self.nfq.bind():                    # bind first: nothing is sent to it yet
+                raise RuntimeError(self.nfq.error or "packet queue unavailable")
             self.nfq.start()
-            print(f"[gateway] firewall active ({self.gateway.backend} queue backend)")
-        if download_lists:
+            self.gateway.queue_num = queue_num
+            self.gateway.setup(devices=self._device_sets())   # one atomic switch-over
+            print(f"[gateway] firewall active ({self.gateway.backend} queue backend, queue {queue_num})")
+        from .config import data_dir
+        from .handover import Leader
+        self.leader = Leader(os.path.join(data_dir(self.cfg), "leader.lock"))
+        self._download_lists = download_lists
+        self.leader.acquire_then(self._lead)
+        if not self.leader.is_leader:
+            print("[handover] serving alongside the previous version; taking over its jobs when it exits")
+
+    def _lead(self):
+        """The once-only jobs. Runs at start-up, or - during an update - the moment
+        the previous version exits."""
+        self.leading_since = time.time()
+        if self.takeover:
+            print("[handover] previous version has exited - taking over")
+            self.policy.reload()
+            self.scheduler.reload()
+            self.refresh_allowlist()
+            self.dnscache.load()
+            if self.gateway is not None:
+                self.sync_gateway(force=True)
+        self._check_offline_gap()
+        if self._download_lists:
             self.lists.start_background()
         if self.monitor is not None:
+            n = self.monitor.resume_from_db()
             self.monitor.start()
-            print(f"[flows] monitoring via {self.monitor.backend.name}")
+            print(f"[flows] monitoring via {self.monitor.backend.name}" + (f" (resumed {n} connections)" if n else ""))
         else:
             print("[flows] traffic accounting disabled (no capture backend available)")
         if self.detector is not None:
@@ -136,7 +178,38 @@ class Guardian:
             self.mdns.sync()
             st = self.mdns.status()
             print(f"[mdns] {'announcing ' + st['name'] if st['running'] else 'not announcing: ' + str(st['error'])}")
+        if getattr(self, "updater", None) is not None:
+            self.updater.start()
         threading.Thread(target=self._housekeeping, name="housekeeping", daemon=True).start()
+
+    def ready(self) -> bool:
+        """Serving DNS, and (on the Pi) inspecting packets behind a loaded firewall."""
+        ok = bool(getattr(self, "dns_servers", None))
+        if self.gateway is not None:
+            ok = ok and self.gateway.status.get("applied") and self.nfq is not None and self.nfq.running
+        return bool(ok)
+
+    def shutdown(self, handover: bool):
+        """handover=True: a newer process has taken over - stop answering, finish the
+        packets already queued to us, leave the firewall alone. handover=False: the
+        service is being stopped."""
+        if handover:
+            # New lookups and packets already go to the new process; keep answering
+            # what's queued to us (DNS sockets, the packet queue) for a moment.
+            time.sleep(2.0 if self.nfq is not None else 1.0)
+        for s in getattr(self, "dns_servers", []):
+            try:
+                s.server.server_close()
+            except Exception:
+                pass
+        if self.mdns is not None:
+            self.mdns.stop()
+        if not handover and self.gateway is not None:
+            self.gateway.teardown()
+        try:
+            self.db.flush(timeout=3)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ defences
     def refresh_allowlist(self):
@@ -219,10 +292,7 @@ class Guardian:
         self.db.set_meta("heartbeat", str(now))
 
     def stop(self):
-        if self.mdns is not None:
-            self.mdns.stop()
-        if self.gateway is not None:
-            self.gateway.teardown()
+        self.shutdown(handover=False)
         self.db.close()
 
     def _housekeeping(self):
@@ -248,10 +318,22 @@ class Guardian:
                 self.errors["housekeeping"] = str(e)
                 print(f"[housekeeping] {e}")
 
-    def sync_gateway(self):
+    def _device_sets(self) -> dict:
+        s = self._compute_sets()
+        return {"trusted": s[0], "paused": s[1], "udp_ok": s[2], "admin": s[3], "open": s[4]}
+
+    def sync_gateway(self, force: bool = False):
         """Mirror device groups, pauses and lists into the firewall's sets."""
         if self.gateway is None:
             return
+        trusted, paused, udp_ok, admin, open_, ip_of = self._compute_sets(with_ips=True)
+        changed = self.gateway.sync_device_sets(trusted, paused, udp_ok, admin, open_, force=force)
+        for mac in changed:
+            if ip_of.get(mac):
+                self.gateway.kill_device_flows(ip_of[mac])
+        self.gateway.sync_ip_sets(force=force)
+
+    def _compute_sets(self, with_ips: bool = False):
         trusted, paused, udp_ok, admin, open_ = set(), set(), set(), set(), set()
         admin_groups = set(self.cfg["gateway"].get("admin_groups") or [])
         ip_of = {}
@@ -276,11 +358,9 @@ class Guardian:
                 admin.add(mac)
             if self.scheduler.is_paused(d["device_id"], g)[0]:
                 paused.add(mac)
-        changed = self.gateway.sync_device_sets(trusted, paused, udp_ok, admin, open_)
-        for mac in changed:
-            if ip_of.get(mac):
-                self.gateway.kill_device_flows(ip_of[mac])
-        self.gateway.sync_ip_sets()
+        if with_ips:
+            return trusted, paused, udp_ok, admin, open_, ip_of
+        return trusted, paused, udp_ok, admin, open_
 
     def reconfigure(self):
         """Apply changed settings (setup wizard) to the running components.
@@ -302,6 +382,12 @@ class Guardian:
         access) take effect. Under systemd we simply exit and systemd starts us
         again; otherwise the process replaces itself with a fresh copy."""
         import os
+
+        from . import supervisor
+        if supervisor.under_supervisor():
+            # Seamless: a fresh copy of this version takes over, as for an update.
+            supervisor.request_switch(self.cfg, os.environ.get("GUARDIAN_RELEASE_DIR"), "restart")
+            return
 
         def go():
             time.sleep(delay)

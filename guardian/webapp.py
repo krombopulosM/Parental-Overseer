@@ -836,6 +836,43 @@ def create_app(g) -> FastAPI:
         a["mode"] = g.mode
         return a
 
+    # ------------------------------------------------------------ updates
+    @app.get("/api/updates")
+    def updates():
+        return g.updater.status()
+
+    @app.post("/api/updates/check")
+    def updates_check():
+        return g.updater.check(manual=True)
+
+    @app.post("/api/updates/install")
+    def updates_install():
+        from .updater import UpdateError
+        try:
+            return g.updater.install(manual=True)
+        except UpdateError as e:
+            raise HTTPException(409, str(e))
+
+    @app.post("/api/updates/rollback")
+    def updates_rollback():
+        from .updater import UpdateError
+        try:
+            return g.updater.rollback()
+        except UpdateError as e:
+            raise HTTPException(409, str(e))
+
+    @app.post("/api/updates/settings")
+    async def updates_settings(req: Request):
+        from . import settings
+        b = await req.json()
+        keys = {"enabled": "updates_enabled", "auto_install": "updates_auto", "source": "updates_source",
+                "branch": "updates_branch", "subdir": "updates_subdir"}
+        try:
+            settings.apply(g.cfg, {keys[k]: v for k, v in b.items() if k in keys})
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        return g.updater.status()
+
     @app.get("/api/protections")
     def get_protections():
         c = g.cfg

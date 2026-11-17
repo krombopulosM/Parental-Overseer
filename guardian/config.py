@@ -45,6 +45,8 @@ DEFAULTS: dict = {
         "protocol_exempt_domains": ["whatsapp.net", "whatsapp.com"],
     },
     "protections": {},                 # filled from protections.DEFAULTS in normalize()
+    "updates": {"enabled": True, "auto_install": True, "source": "", "branch": "main", "subdir": "",
+                "interval_minutes": 60},
     "torrent": {"fanout_peers": 25, "window": 60},
     "reputation": {"popularity_urls": [], "popularity_files": [], "popular_top": 200000, "familiar_days": 60},
     "vpn": {"unknown_destinations": "review", "unknown_min_bytes": 15_000_000, "unknown_min_seconds": 600,
@@ -118,7 +120,10 @@ def load_config(path: str | None = None) -> dict:
     base_dir = os.path.dirname(path)
     with open(path, "r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh) or {}
-    local = os.path.join(base_dir, "config.local.yaml")
+    # Installed by setup-pi.sh, each version lives in its own folder and the
+    # database + this machine's settings live in a shared data folder.
+    data_dir = os.environ.get("GUARDIAN_DATA_DIR")
+    local = os.path.join(data_dir or base_dir, "config.local.yaml")
     if os.path.exists(local):
         with open(local, "r", encoding="utf-8") as fh:
             cfg = deep_merge(cfg, yaml.safe_load(fh) or {})
@@ -129,6 +134,8 @@ def load_config(path: str | None = None) -> dict:
             convert_legacy(g)
     cfg["__base__"] = base_dir
     cfg["__path__"] = path
+    if data_dir:
+        cfg["__data__"] = os.path.abspath(data_dir)
     normalize(cfg)
     return cfg
 
@@ -149,6 +156,17 @@ def normalize(cfg: dict) -> None:
     cfg["dns"]["strip_https_records"] = _tristate(cfg["dns"]["strip_https_records"], "filtered")
     cfg["dns"]["block_qtypes_filtered"] = [str(q).upper() if q is not None else "NULL"
                                            for q in cfg["dns"]["block_qtypes_filtered"]]
+
+
+def data_dir(cfg: dict) -> str:
+    return cfg.get("__data__") or cfg["__base__"]
+
+
+def resolve_data_path(cfg: dict, p: str | None) -> str | None:
+    """Paths of things this machine keeps (database, list cache): in the data folder."""
+    if not p:
+        return None
+    return p if os.path.isabs(p) else os.path.join(data_dir(cfg), p)
 
 
 def resolve_path(cfg: dict, p: str | None) -> str | None:

@@ -330,8 +330,9 @@ def start_dns(resolver: GuardianResolver, host: str, port: int):
     deadline = time.time() + 15
     while True:
         try:
-            servers = [DNSServer(resolver, address=host, port=port, tcp=False, logger=logger),
-                       DNSServer(resolver, address=host, port=port, tcp=True, logger=logger)]
+            from .handover import ReuseTCPServer, ReuseUDPServer
+            servers = [DNSServer(resolver, address=host, port=port, tcp=False, logger=logger, server=ReuseUDPServer),
+                       DNSServer(resolver, address=host, port=port, tcp=True, logger=logger, server=ReuseTCPServer)]
             break
         except OSError:
             if time.time() > deadline:

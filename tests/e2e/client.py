@@ -613,5 +613,63 @@ def suite_console_web_games():
     check("back to web + games: OpenVPN port blocked again", raw_tcp("198.51.100.91", 1194, b"x"), "timeout")
 
 
+# ---------------------------------------------------------------- continuous probes (during an update)
+def _probe(loops, seconds):
+    import threading
+    stats = {}
+    deadline = time.time() + seconds
+
+    def run(name, fn, pause):
+        st = stats.setdefault(name, {"n": 0, "bad": 0, "first_bad": None})
+        while time.time() < deadline:
+            good = fn()
+            st["n"] += 1
+            if not good:
+                st["bad"] += 1
+                st["first_bad"] = st["first_bad"] or round(time.time() - (deadline - seconds), 1)
+            time.sleep(pause)
+    ts = [threading.Thread(target=run, args=(n, f, p)) for n, f, p in loops]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    return stats
+
+
+def _udp_echo(ip, port, payload, timeout=1.0):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(payload, (ip, port))
+        return bool(s.recvfrom(2048)[0])
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def suite_probe_kid():
+    secs = float(os.environ.get("PROBE_SECONDS", "40"))
+    st = _probe([
+        ("allowed lookup answered", lambda: dns("site.test") == (0, ["198.51.100.10"]), 0.05),
+        ("blocked site never resolves", lambda: dns("adult-site.test")[0] != 0 or not dns("adult-site.test")[1], 0.1),
+        ("allowed site opens", lambda: tls("198.51.100.10", "site.test", timeout=6) == "ok", 0.2),
+        ("VPN server never reachable", lambda: tls("198.51.100.66", "vpn-server.test", timeout=1.5) != "ok", 0.1),
+        ("WireGuard never gets out", lambda: not _udp_echo("198.51.100.91", 51820, b"\x01\x00\x00\x00" + os.urandom(144)), 0.1),
+    ], secs)
+    for name, v in st.items():
+        check(f"kid during the update: {name} ({v['n']} tries)", v["bad"], 0)
+
+
+def suite_probe_parent():
+    secs = float(os.environ.get("PROBE_SECONDS", "40"))
+    st = _probe([
+        ("lookups answered", lambda: dns("vps.test") == (0, ["198.51.100.77"]), 0.05),
+        ("websites open", lambda: tls("198.51.100.77", "vps.test", timeout=6) == "ok", 0.2),
+    ], secs)
+    for name, v in st.items():
+        check(f"parent during the update: {name} ({v['n']} tries)", v["bad"], 0)
+
+
 if __name__ == "__main__":
     globals()[f"suite_{sys.argv[1]}"]()

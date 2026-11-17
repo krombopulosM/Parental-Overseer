@@ -22,6 +22,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 W = "/tmp/pg-e2e"
 PY = sys.executable
+UP = f"{W}/upstream"          # a git repository standing in for the project's GitHub
+INST = f"{W}/inst"            # the installed layout: releases/, current, venvs/, data/
+DATA = f"{INST}/data"
 NAMESPACES = ["pg-inet", "pg-gw", "pg-kid", "pg-kid2", "pg-parent", "pg-console"]
 LAN = [("pg-kid", "10.50.0.10", "02:00:00:00:00:10"), ("pg-kid2", "10.50.0.11", "02:00:00:00:00:11"),
        ("pg-parent", "10.50.0.20", "02:00:00:00:00:20"), ("pg-console", "10.50.0.30", "02:00:00:00:00:30")]
@@ -111,8 +114,62 @@ def write_config():
     cfg["downloads"].update(min_bytes=3_000_000)
     cfg["gateway"].update(wan_interface="wan0", lan_interfaces=["lan0"], lan_ip="10.50.0.1",
                           lan_subnets=["10.50.0.0/24"], dhcp_leases=None)
-    with open(f"{W}/config.yaml", "w") as fh:
+    cfg["updates"] = {"enabled": False, "auto_install": False, "source": "", "branch": "main", "subdir": ""}
+    import shutil
+    shutil.rmtree(DATA, ignore_errors=True)
+    os.makedirs(DATA, exist_ok=True)
+    with open(f"{DATA}/config.local.yaml", "w") as fh:      # this machine's settings, as setup-pi.sh does
         yaml.safe_dump(cfg, fh)
+
+
+def git(*args, cwd=UP):
+    return subprocess.run(["git", "-c", "user.email=e2e@test", "-c", "user.name=e2e", *args], cwd=cwd,
+                          check=True, capture_output=True, text=True).stdout
+
+
+def install_like_the_pi():
+    """Publish this working tree as version 1 in a local git repo, and install it
+    with tools/install.py into the same layout setup-pi.sh makes."""
+    import shutil
+    for d in (UP, f"{INST}/releases", f"{INST}/venvs"):
+        shutil.rmtree(d, ignore_errors=True)
+    shutil.copytree(ROOT, UP, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "guardian.db*",
+                                                             "config.local.yaml", "cache", ".pytest_cache"))
+    git("init", "-q", "-b", "main")
+    git("add", "-A")
+    git("commit", "-q", "-m", "Version 1")
+    # The test machine already has every package: pre-make the environment the
+    # requirements map to, so no download is needed (a Pi builds it with pip).
+    sys.path.insert(0, ROOT)
+    from guardian import updater
+    key = updater.requirements_hash(UP, True)
+    os.makedirs(f"{INST}/venvs/{key}/bin", exist_ok=True)
+    if not os.path.exists(f"{INST}/venvs/{key}/bin/python"):
+        os.symlink(PY, f"{INST}/venvs/{key}/bin/python")
+    out = subprocess.run([PY, f"{ROOT}/tools/install.py", "--root", INST, "--source-dir", UP, "--gateway"],
+                         env=dict(os.environ, GUARDIAN_DATA_DIR=DATA), capture_output=True, text=True)
+    if out.returncode != 0:
+        print(out.stdout, out.stderr)
+        raise SystemExit("install failed")
+
+
+def sup_state():
+    with open(f"{DATA}/supervisor.json") as fh:
+        return json.load(fh)
+
+
+def wait_for_worker_change(old_pid, timeout=90):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            st = sup_state()
+            if st.get("worker_pid") and st["worker_pid"] != old_pid:
+                time.sleep(1)
+                return st
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.3)
+    return sup_state()
 
 
 def start_processes():
@@ -121,17 +178,20 @@ def start_processes():
            f"-days 3 -subj /CN=e2e.test")
     procs.append(subprocess.Popen(["ip", "netns", "exec", "pg-inet", PY, f"{HERE}/servers.py", f"{W}/cert.pem",
                                    f"{W}/key.pem"], stdout=open(f"{W}/servers.log", "w"), stderr=subprocess.STDOUT))
-    env = dict(os.environ, GUARDIAN_PASSWORD="e2e-password")
-    subprocess.run([PY, f"{ROOT}/run.py", "--config", f"{W}/config.yaml", "--set-password"], env=env,
-                   check=True, capture_output=True)
+    install_like_the_pi()
+    env = dict(os.environ, GUARDIAN_PASSWORD="e2e-password", GUARDIAN_DATA_DIR=DATA)
+    subprocess.run([PY, f"{INST}/current/run.py", "--set-password"], env=env, check=True, capture_output=True)
     # pretend the gateway was last alive an hour ago (power cut / unplugged)
     import sqlite3
     c = sqlite3.connect(f"{W}/guardian.db")
     c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('heartbeat', ?)", (str(time.time() - 3600),))
     c.commit()
     c.close()
-    gw = subprocess.Popen(["ip", "netns", "exec", "pg-gw", PY, f"{ROOT}/run.py", "--config", f"{W}/config.yaml",
-                           "--no-download"], stdout=open(f"{W}/gateway.log", "w"), stderr=subprocess.STDOUT)
+    # what the Pi's systemd unit runs: the supervisor, from <root>/current
+    gw = subprocess.Popen(["ip", "netns", "exec", "pg-gw", f"{INST}/current/.venv/bin/python",
+                           f"{INST}/current/run.py", "--supervise", "--no-download"],
+                          env=dict(os.environ, GUARDIAN_DATA_DIR=DATA),
+                          stdout=open(f"{W}/gateway.log", "w"), stderr=subprocess.STDOUT)
     procs.append(gw)
     for _ in range(60):
         if sh(nsx("pg-parent", "curl -s -o /dev/null -w %{http_code} http://10.50.0.1:8080/api/session"),
@@ -455,8 +515,9 @@ def main():
 
         def restart_with(fail_open):
             r = api("post", "/api/wizard/apply", {"values": {"fail_open": fail_open}})
+            before = sup_state()["worker_pid"]
             api("post", "/api/system/restart")
-            time.sleep(2)
+            wait_for_worker_change(before)
             for _ in range(60):
                 if sh(nsx("pg-parent", "curl -s -o /dev/null -w %{http_code} http://10.50.0.1:8080/api/session"),
                       check=False).stdout == "200":
@@ -466,15 +527,15 @@ def main():
         need = restart_with(True)
         record(sec, "fail-open/closed choice needs a restart", need == ["fail_open"], need)
         w2 = api("get", "/api/wizard")
-        record(sec, "service restarted itself in place (same process) with the new setting",
+        record(sec, "settings restart is a seamless hand-over (same service, new worker)",
                gw.poll() is None and w2["values"]["fail_open"] is True and w2["complete"], w2["values"]["fail_open"])
         restart_with(False)
         time.sleep(2)
         fw = [c for c in api("get", "/api/wizard")["environment"]["checks"] if c["title"] == "Firewall"]
         record(sec, "inspector running again after two restarts", fw and fw[0]["status"] == "ok", fw)
         rules = sh(nsx("pg-gw", "iptables -S FORWARD"), check=False).stdout
-        record(sec, "no stale fail-open queue rule left behind", "--queue-bypass" not in rules,
-               [r for r in rules.splitlines() if "NFQUEUE" in r])
+        q = [r for r in rules.splitlines() if "NFQUEUE" in r]
+        record(sec, "no stale fail-open queue rule left behind", "--queue-bypass" not in rules and len(q) == 1, q)
         run_suite("pg-kid", "kid_basic", sec + ": filtering works after the restart")
 
         # ---- The dashboard's friendly address
@@ -534,6 +595,110 @@ def main():
         setp("consoles", "non_web", "games")
         run_suite("pg-console", "console_web_games", sec)
         run_suite("pg-console", "console_tor", sec + ": console back to normal")
+
+        # ---- Seamless updates: a new version from the git repo, installed while
+        # a child's device and the parent's laptop use the network non-stop
+        sec = "Seamless update"
+        upd = api("post", "/api/updates/settings", {"source": UP, "branch": "main", "subdir": "", "enabled": True,
+                                                     "auto_install": False})
+        record(sec, "update source set", upd["status"] == 200, upd["body"].get("detail") or upd["body"]["settings"])
+        v1 = api("get", "/api/updates")["current"]
+        with open(f"{UP}/VERSION", "w") as fh:
+            fh.write("2.9.0\n")
+        with open(f"{UP}/guardian/static/docs.html", "a") as fh:
+            fh.write("\n<!-- update-marker-2.9.0 -->\n")
+        git("commit", "-qam", "Better Tor detection")
+        chk = api("post", "/api/updates/check")["body"]
+        record(sec, "check finds the new version and what changed",
+               chk["status"] == "available" and chk["latest"]["version"] == "2.9.0"
+               and "Better Tor detection" in chk["latest"]["changes"], (chk["status"], chk.get("latest"), chk.get("error")))
+        before = sup_state()
+        nft_before = sh(nsx("pg-gw", "iptables -S FORWARD"), check=False).stdout
+        env = dict(os.environ, PROBE_SECONDS="45")
+        probes = [subprocess.Popen(["ip", "netns", "exec", ns, PY, f"{HERE}/client.py", suite], env=env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                  for ns, suite in (("pg-kid", "probe_kid"), ("pg-parent", "probe_parent"))]
+        time.sleep(4)
+        t0 = time.time()
+        inst = api("post", "/api/updates/install")
+        record(sec, "install started from the dashboard", inst["status"] == 200, inst["body"].get("detail"))
+        st = {}
+        while time.time() - t0 < 120:
+            time.sleep(1)
+            try:
+                st = api("get", "/api/updates")
+            except RuntimeError:
+                continue
+            if st.get("status") in ("installed", "failed"):
+                break
+        took = time.time() - t0
+        record(sec, f"installed with no interruption ({took:.0f} s)", st.get("status") == "installed",
+               (st.get("status"), st.get("message"), st.get("error")))
+        for p in probes:
+            out, err = p.communicate(timeout=120)
+            for line in out.splitlines():
+                r = json.loads(line)
+                r["section"] = sec
+                results.append(r)
+            if p.returncode:
+                record(sec, "probe crashed", False, err[-300:])
+        after = sup_state()
+        record(sec, "now running the new version", st.get("current", {}).get("version") == "2.9.0",
+               st.get("current"))
+        record(sec, "same service (supervisor), new worker, other queue",
+               gw.poll() is None and after["supervisor_pid"] == before["supervisor_pid"]
+               and after["worker_pid"] != before["worker_pid"] and after["slot"] != before["slot"],
+               (before.get("slot"), after.get("slot")))
+        q = [r for r in sh(nsx("pg-gw", "iptables -S FORWARD"), check=False).stdout.splitlines() if "NFQUEUE" in r]
+        record(sec, "firewall moved to the new queue, old rule gone",
+               len(q) == 1 and f"--queue-num {after['slot']}" in q[0], (q, [r for r in nft_before.splitlines() if "NFQUEUE" in r]))
+        record(sec, "<root>/current points at the new release", os.path.realpath(f"{INST}/current") == after["release"])
+        g = api("raw", "/static/docs.html", {"markers": ["update-marker-2.9.0"]})
+        record(sec, "the new code is what's serving", g["markers"] == ["update-marker-2.9.0"])
+        hist = st.get("history") or [{}]
+        record(sec, "update history recorded", hist[0].get("ok") and hist[0]["to"]["version"] == "2.9.0", hist[:1])
+        alerts = [a["kind"] for a in api("get", "/api/alerts?limit=50")["alerts"]]
+        record(sec, "'update installed' noted in alerts", "update_installed" in alerts)
+
+        # A broken version: the self-test stops it before it goes anywhere near the network
+        sec = "Broken update is stopped"
+        with open(f"{UP}/VERSION", "w") as fh:
+            fh.write("3.0.0\n")
+        with open(f"{UP}/guardian/localname.py", "a") as fh:
+            fh.write("\n\ndef names(cfg):\n    raise RuntimeError('broken on purpose')\n")
+        git("commit", "-qam", "A broken change")
+        worker = sup_state()["worker_pid"]
+        api("post", "/api/updates/check")
+        api("post", "/api/updates/install")
+        t0 = time.time()
+        while time.time() - t0 < 120:
+            time.sleep(1)
+            st = api("get", "/api/updates")
+            if st.get("status") in ("installed", "failed", "up_to_date"):
+                break
+        record(sec, "the update was refused by the self-test", st.get("status") == "failed"
+               and "self-test" in (st.get("error") or ""), (st.get("status"), st.get("error")))
+        record(sec, "still on the working version, same worker, nothing restarted",
+               st.get("current", {}).get("version") == "2.9.0" and sup_state()["worker_pid"] == worker)
+        run_suite("pg-kid", "kid_basic", sec + ": filtering unaffected")
+        alerts = [a["kind"] for a in api("get", "/api/alerts?limit=50")["alerts"]]
+        record(sec, "'update failed' noted in alerts", "update_failed" in alerts)
+
+        # Going back to the previous version is a hand-over too
+        sec = "Roll back"
+        worker = sup_state()["worker_pid"]
+        rb = api("post", "/api/updates/rollback")
+        record(sec, "rollback started", rb["status"] == 200, rb["body"].get("detail"))
+        wait_for_worker_change(worker)
+        st = {}
+        for _ in range(30):
+            st = api("get", "/api/updates")
+            if st.get("current", {}).get("version") == v1["version"]:
+                break
+            time.sleep(1)
+        record(sec, "back on the previous version", st.get("current", {}).get("version") == v1["version"],
+               st.get("current"))
+        run_suite("pg-kid", "kid_basic", sec + ": filtering after the rollback")
 
         # ---- Tamper resistance: kill the inspector
         gw.terminate()

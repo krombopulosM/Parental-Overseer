@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS activity (
     PRIMARY KEY (device_id, minute)
 );
 CREATE TABLE IF NOT EXISTS familiar_domains (domain TEXT PRIMARY KEY, last_seen REAL);
+CREATE TABLE IF NOT EXISTS dns_answers (
+    client_ip TEXT NOT NULL, ip TEXT NOT NULL, name TEXT NOT NULL, expires REAL NOT NULL,
+    PRIMARY KEY (client_ip, ip, name)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_dns_answers_exp ON dns_answers(expires);
 CREATE TABLE IF NOT EXISTS tls_fingerprints (
     ja4 TEXT PRIMARY KEY, good INTEGER DEFAULT 0, bad_label TEXT, bad_source TEXT, learned REAL, last REAL
 );
@@ -571,4 +576,5 @@ class DB:
         self.enqueue("DELETE FROM usage WHERE minute<?", (int(cutoff // 60) - 60 * 24 * 60,))
         self.enqueue("DELETE FROM alerts WHERE last_ts<?", (cutoff,))
         self.enqueue("DELETE FROM dyn_blocks WHERE expires<?", (time.time(),))
+        self.enqueue("DELETE FROM dns_answers WHERE expires<?", (time.time(),))
         self.enqueue("DELETE FROM activity WHERE minute<?", (int(cutoff // 60),))

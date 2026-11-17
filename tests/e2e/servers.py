@@ -148,8 +148,9 @@ def main(cert, key):
     tcp(("198.51.100.77", 1194), EchoHandler)
     tcp(("198.51.100.91", 1194), EchoHandler)          # protection-switch tests (never allow-listed)
     tcp(("198.51.100.78", 443), ServerFirstHandler)
-    for port in (51820, 3074, 443):
-        u = socketserver.ThreadingUDPServer(("198.51.100.77", port), UDPEcho)
+    for ip, port in (("198.51.100.77", 51820), ("198.51.100.77", 3074), ("198.51.100.77", 443),
+                     ("198.51.100.91", 51820)):                 # .91: never allow-listed by other tests
+        u = socketserver.ThreadingUDPServer((ip, port), UDPEcho)
         threading.Thread(target=u.serve_forever, daemon=True).start()
     print("servers ready", flush=True)
     while True:

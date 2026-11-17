@@ -262,3 +262,23 @@ def test_nft_ruleset_supports_open_groups_and_per_group_lists():
     assert "set open_macs" in t and "ether saddr @open_macs jump udp_inspect" in t
     bad = t[t.index("chain bad_dest"):t.index("chain web")]
     assert "return" in bad and "drop" not in bad
+
+
+def test_handover_grace_only_holds_back_enforced_direct_connections(penv):
+    import time as _t
+    penv.insp.handover_until = _t.time() + 20
+    c2 = Conn(penv.insp, KID, VPS_IP, 443, sport=40009)
+    v = c2.syn()
+    assert (v.action, v.kind) == ("drop", "handover")              # first SYN held back quietly...
+    assert "no_dns" not in penv.kinds()
+    v = c2.syn()                                                   # ...the resent SYN is judged normally
+    assert (v.action, v.kind) == ("reset", "no_dns")
+    off(penv, "direct_ip", "log")
+    assert Conn(penv.insp, KID, VPS_IP, 443, sport=40001).syn().action == "accept"   # log mode: unaffected
+    # an answer the previous process gave (in the database) is honoured straight away
+    class FakeDB:
+        def query(self, sql, params):
+            return [{"name": "relay.example", "expires": _t.time() + 600}] if params[1] == "45.32.1.9" else []
+    penv.dnscache.db = FakeDB()
+    off(penv, "direct_ip", "enforce")
+    assert Conn(penv.insp, KID, "45.32.1.9", 443, sport=40002).syn().action == "accept"

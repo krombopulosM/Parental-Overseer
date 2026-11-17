@@ -89,6 +89,11 @@ _PATHS = {
     "web_host": (("web", "host"), True),
     "tamper_watch": (("tamper", "enabled"), True),
     "local_name": (("web", "local_name"), False),
+    "updates_enabled": (("updates", "enabled"), False),
+    "updates_auto": (("updates", "auto_install"), False),
+    "updates_source": (("updates", "source"), False),
+    "updates_branch": (("updates", "branch"), False),
+    "updates_subdir": (("updates", "subdir"), False),
 }
 
 _CHOICES = {
@@ -137,7 +142,7 @@ def current(cfg: dict) -> dict:
 
 
 def local_path(cfg: dict) -> str:
-    return os.path.join(cfg["__base__"], "config.local.yaml")
+    return os.path.join(cfg.get("__data__") or cfg["__base__"], "config.local.yaml")
 
 
 def validate(values: dict, cfg: dict) -> dict:
@@ -155,7 +160,8 @@ def validate(values: dict, cfg: dict) -> dict:
             if val not in _CHOICES[key]:
                 raise ValueError(f"{key}: choose one of {', '.join(_CHOICES[key])}")
             out[key] = val
-        elif key in ("safesearch", "family_dns", "fail_open", "log_trusted", "tamper_watch"):
+        elif key in ("safesearch", "family_dns", "fail_open", "log_trusted", "tamper_watch", "updates_enabled",
+                     "updates_auto"):
             out[key] = bool(val)
         elif key in ("escalation_pause", "tamper_pause"):
             out[key] = max(0, min(24 * 60, int(val)))
@@ -166,6 +172,23 @@ def validate(values: dict, cfg: dict) -> dict:
             if port not in (53, 5353) and not 1024 < port < 65536:
                 raise ValueError("DNS port must be 53, 5353 or above 1024")
             out[key] = port
+        elif key in ("updates_source", "updates_branch", "updates_subdir"):
+            from .updater import UpdateError, validate_source
+            val = str(val or "").strip()
+            if key == "updates_subdir":
+                val = val.strip("/")
+            cur = {"updates_source": _get(cfg, ("updates", "source"), ""),
+                   "updates_branch": _get(cfg, ("updates", "branch"), "main"),
+                   "updates_subdir": _get(cfg, ("updates", "subdir"), "")}
+            cur.update({k: v for k, v in values.items() if k in cur})
+            cur[key] = val
+            if cur["updates_source"]:
+                try:
+                    validate_source(str(cur["updates_source"]).strip(), str(cur["updates_branch"]).strip() or "main",
+                                    str(cur["updates_subdir"]).strip().strip("/"))
+                except UpdateError as e:
+                    raise ValueError(str(e))
+            out[key] = val
         elif key == "local_name":
             from .localname import valid_label
             val = str(val).strip().lower()
@@ -234,7 +257,7 @@ def restart_needed(values: dict, cfg: dict) -> list[str]:
 
 
 def save_local(cfg: dict, overrides: dict):
-    path = local_path(cfg)
+    path = os.path.realpath(local_path(cfg))
     local = {}
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as fh:
