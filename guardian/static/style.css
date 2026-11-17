@@ -558,3 +558,18 @@ button.link:hover { text-decoration: underline; }
 @media (max-width: 700px) { .upd-latest { flex-direction: column; } .upd-latest button { width: 100%; } }
 .wz-toggle .t { display: block; }
 .wz-toggle .d { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; font-weight: 400; }
+
+/* ---------- diagnostics ---------- */
+.diag-intro { margin: 0 0 12px; }
+.diag-form { display: grid; gap: 10px; }
+.diag-note { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.diag-note textarea { font: inherit; font-size: 13px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; resize: vertical; min-height: 64px; width: 100%; }
+.diag-note textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.diag-opt { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: start; cursor: pointer; font-size: 13.5px; }
+.diag-opt input { margin: 2px 0 0; width: 18px; height: 18px; accent-color: var(--accent); }
+.diag-opt .d { display: block; color: var(--faint); font-size: 12.5px; margin-top: 1px; }
+.diag-cli { margin-top: 12px; }
+.diag-cli summary { cursor: pointer; color: var(--accent); font-size: 13px; padding: 4px 0; }
+@media (max-width: 700px) { .diag-form .row button { width: 100%; } }
+input[type=checkbox], input[type=radio] { min-height: 0; padding: 0; }

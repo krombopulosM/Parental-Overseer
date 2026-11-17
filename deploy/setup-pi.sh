@@ -196,6 +196,16 @@ if ss -lunp 2>/dev/null | grep -q "systemd-resolve.*:53 "; then
   systemctl restart systemd-resolved
 fi
 
+echo "==> Diagnostics command (for when the dashboard won't open)"
+cat > /usr/local/bin/parental-gateway-diagnostics <<WRAPPER
+#!/bin/sh
+# Writes a diagnostics zip (logs, status, settings, firewall) to send when asking for help.
+#   sudo parental-gateway-diagnostics [output.zip]
+export GUARDIAN_DATA_DIR="$DATA_DIR"
+exec "$APP_DIR/current/.venv/bin/python" "$APP_DIR/current/run.py" --diagnostics "\$@"
+WRAPPER
+chmod 755 /usr/local/bin/parental-gateway-diagnostics
+
 echo "==> Service"
 sed "s#/opt/parental-gateway#$APP_DIR#g" "$APP_DIR/current/deploy/parental-gateway.service" \
   > /etc/systemd/system/parental-gateway.service

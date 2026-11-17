@@ -836,6 +836,19 @@ def create_app(g) -> FastAPI:
         a["mode"] = g.mode
         return a
 
+    # ------------------------------------------------------------ diagnostics
+    @app.post("/api/diagnostics")
+    async def diagnostics(req: Request):
+        from starlette.concurrency import run_in_threadpool
+        from .diagnostics import build
+        b = await req.json()
+        blob, name = await run_in_threadpool(
+            build, g.cfg, g, include_alerts=bool(b.get("alerts", True)), include_activity=bool(b.get("activity", False)),
+            anonymise=bool(b.get("anonymise", True)), note=str(b.get("note") or "")[:20000])
+        print(f"[diagnostics] bundle downloaded ({len(blob) // 1024} KB, anonymised={bool(b.get('anonymise', True))})")
+        return Response(blob, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
     # ------------------------------------------------------------ updates
     @app.get("/api/updates")
     def updates():

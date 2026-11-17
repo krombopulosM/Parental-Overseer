@@ -542,6 +542,18 @@ and talking through an alert rather than just punishing it - leads to fewer atte
 
 <section id="faq" data-title="Troubleshooting &amp; FAQ">
 <h2>Troubleshooting &amp; FAQ</h2>
+<h3 id="diagnostics">Getting help: the diagnostics file</h3>
+<p>If something isn't working, go to <b>System → Help &amp; diagnostics</b>, say in a sentence what's wrong, and press
+<b>Download diagnostics</b>. Send the file to whoever helps you with Parental Gateway. It contains the gateway's own
+logs (kept on the gateway, rotated so they never fill it up) and a snapshot of its state: version, which parts are
+running, the setup checklist, settings, update history, firewall rules, database health and recent alerts.</p>
+<ul>
+  <li><b>Private by default.</b> Device names, MAC addresses and home-network addresses are replaced with labels like
+    <i>device-3</i>; the dashboard password and sign-in sessions are never included. Sites visited are left out
+    unless you tick the box for them.</li>
+  <li><b>If the dashboard won't open</b>, the same file can be made on the Raspberry Pi with
+    <code>sudo parental-gateway-diagnostics</code>, or on a PC with <code>python run.py --diagnostics</code>.</li>
+</ul>
 <dl class="defs">
   <dt>A site that should be fine is blocked.</dt><dd>Find it on the Activity page (Lookups, "blocked only") to see why, then add an <b>allow rule</b> on Rules &amp; schedules for the group or everyone.</dd>
   <dt>An online game doesn't work.</dt><dd>Most games need UDP traffic. Put the console or gaming PC in the <b>consoles</b> group - VPN and torrent protocols stay blocked there.</dd>

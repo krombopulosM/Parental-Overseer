@@ -7,6 +7,7 @@
     python run.py --supervise        # what the Pi's service runs: keeps a worker running and
                                      # switches workers with no gap for updates/restarts
     python run.py --selftest         # check this copy works (run before an update goes live)
+    python run.py --diagnostics      # write a diagnostics zip (logs, status, settings) to send for help
 """
 import argparse
 import getpass
@@ -50,6 +51,10 @@ def main():
     ap.add_argument("--no-download", action="store_true", help="don't refresh blocklists on start")
     ap.add_argument("--supervise", action="store_true", help="run under the supervisor (seamless updates)")
     ap.add_argument("--selftest", action="store_true", help="check this copy of the program works, then exit")
+    ap.add_argument("--diagnostics", nargs="?", const="", metavar="OUT.zip",
+                    help="write a diagnostics bundle to send when asking for help, then exit")
+    ap.add_argument("--include-activity", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--no-anonymise", action="store_true", help=argparse.SUPPRESS)
     # used by the supervisor
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--slot", type=int, default=0, help=argparse.SUPPRESS)
@@ -65,6 +70,8 @@ def main():
                      "start the gateway with: python run.py")
         data = default_data_dir()
         os.makedirs(data, exist_ok=True)
+        from guardian.logs import capture
+        capture(data, "supervisor")
         passthrough = ["--no-download"] if args.no_download else []
         sys.exit(Supervisor(os.path.realpath(HERE), data, passthrough).run(adopt_pid=args.adopt, slot=args.slot))
 
@@ -87,6 +94,23 @@ def main():
         print("password set")
         return
 
+    if args.diagnostics is not None:
+        from guardian.diagnostics import build
+        blob, name = build(cfg, None, include_activity=args.include_activity, anonymise=not args.no_anonymise)
+        out = args.diagnostics or os.path.join(os.getcwd(), name)
+        if os.path.isdir(out):
+            out = os.path.join(out, name)
+        try:
+            with open(out, "wb") as fh:
+                fh.write(blob)
+        except OSError:
+            from guardian.config import data_dir
+            out = os.path.join(data_dir(cfg), name)
+            with open(out, "wb") as fh:
+                fh.write(blob)
+        print(f"Diagnostics written to {out} ({len(blob) // 1024} KB). Send this file to whoever is helping you.")
+        return
+
     if args.update_lists:
         from guardian.lists import ListManager
         lm = ListManager(cfg)
@@ -102,6 +126,10 @@ def serve(cfg, args):
     import time
 
     import uvicorn
+
+    from guardian.config import data_dir
+    from guardian.logs import capture
+    capture(data_dir(cfg), "gateway")
 
     from guardian.app import Guardian
     from guardian.handover import REUSEPORT, signal_ready, web_socket

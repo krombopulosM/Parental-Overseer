@@ -878,6 +878,28 @@ views.system = {
     <div class="panel" id="updates"><div class="panel-head"><h2>Updates</h2>
       <div class="tools"><button class="small" id="upd-check">Check for updates</button></div></div>
       <div class="panel-body" id="sys-updates"><div class="muted small">Loading…</div></div></div>
+    <div class="panel" id="diagnostics"><div class="panel-head"><h2>Help &amp; diagnostics</h2></div>
+      <div class="panel-body">
+        <p class="small muted diag-intro">Something not working? Download a diagnostics file and send it to whoever helps you with
+          Parental Gateway. It holds the gateway's logs and a snapshot of its state - versions, what's running, settings,
+          firewall rules, recent alerts - so the problem can be looked into without access to this network.</p>
+        <form id="diag-form" class="diag-form">
+          <label class="diag-note">What's going wrong? <span class="faint">(optional - goes in the file)</span>
+            <textarea id="diag-note" rows="3" maxlength="20000" placeholder="e.g. Sam's tablet can't open YouTube since this morning; the Live page shows nothing"></textarea></label>
+          <label class="diag-opt"><input type="checkbox" id="diag-anon" checked>
+            <span>Hide device names and addresses<span class="d">Replaced by labels like device-3, so devices can still be told apart.</span></span></label>
+          <label class="diag-opt"><input type="checkbox" id="diag-alerts" checked>
+            <span>Include alerts from the last 7 days<span class="d">Blocked bypass attempts and other warnings.</span></span></label>
+          <label class="diag-opt"><input type="checkbox" id="diag-activity">
+            <span>Include sites visited and connections from the last hour<span class="d">Only if the problem is about a particular site.</span></span></label>
+          <div class="row"><button class="primary" type="submit" id="diag-go">Download diagnostics</button>
+            <span class="small muted" id="diag-result" role="status"></span></div>
+        </form>
+        <details class="diag-cli"><summary>The dashboard won't open?</summary>
+          <p class="small muted">On the Raspberry Pi, run <span class="mono">sudo parental-gateway-diagnostics</span> - it writes the same
+            file to the current folder. On a PC, run <span class="mono">python run.py --diagnostics</span> in the program's folder.</p></details>
+        <p class="small faint">Never included: the dashboard password or sign-in sessions.</p>
+      </div></div>
     <div class="tiles" id="sys-tiles"></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h2>Components</h2></div><div class="panel-body" id="sys-comp"></div></div>
@@ -897,6 +919,30 @@ views.system = {
       try { renderUpdates(await post("/api/updates/check")); }
       catch (e) { if (!(e instanceof AuthError)) toast(e.message, 4000); }
       finally { b.disabled = false; b.textContent = "Check for updates"; }
+    };
+    $("#diag-form").onsubmit = async e => {
+      e.preventDefault();
+      const btn = $("#diag-go"), out = $("#diag-result");
+      btn.disabled = true; btn.textContent = "Collecting…"; out.textContent = "";
+      try {
+        const r = await fetch("/api/diagnostics", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-Guardian": "1" },
+          body: JSON.stringify({ note: $("#diag-note").value, anonymise: $("#diag-anon").checked,
+                                 alerts: $("#diag-alerts").checked, activity: $("#diag-activity").checked }),
+        });
+        if (r.status === 401) { showLogin(); return; }
+        if (!r.ok) throw new Error(`couldn't make the file (HTTP ${r.status})`);
+        const blob = await r.blob();
+        const m = (r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
+        const name = m ? m[1] : "parental-gateway-diagnostics.zip";
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = name; document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 4000);
+        out.textContent = `Saved ${name} (${fmtBytes(blob.size)}) - send it to whoever is helping you.`;
+      } catch (err) { out.textContent = err.message; }
+      finally { btn.disabled = false; btn.textContent = "Download diagnostics"; }
     };
     renderUpdates(await api("/api/updates"));
     $("#sys-update").onclick = () => act(() => post("/api/system/update-lists"), "Updating lists in the background…");

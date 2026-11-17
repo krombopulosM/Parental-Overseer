@@ -524,10 +524,35 @@ Categories, lists, detector thresholds and schedules are all in
 
 ---
 
+## Getting help: diagnostics
+
+**System → Help & diagnostics → Download diagnostics** makes a zip to send to
+whoever is helping (with an optional note about what's wrong). If the dashboard
+won't open: `sudo parental-gateway-diagnostics` on the Pi, or
+`python run.py --diagnostics` anywhere.
+
+Inside: `summary.json` (version, platform, running state), `status.json` (each
+component), `environment.json` (setup checklist), `updates.json` and
+`supervisor/` (update history, last switch), `config/` (settings in effect),
+`database.json` (health, table sizes, schema), `devices.json`, `rules.json`,
+`alerts.json` (7 days), `logs/` (the gateway's and supervisor's own logs) and,
+on Linux, `system/` (nft ruleset, iptables, addresses, routes, service status,
+journal, kernel settings). Anything that couldn't be collected is listed in
+`collector-errors.txt` instead of stopping the export.
+
+The logs are new: everything the gateway prints (and any crash traceback) is
+also written to `<data>/logs/gateway.log` / `supervisor.log` with a timestamp
+and process ID per line, rotated at 2 MB with 3 kept.
+
+Privacy: device names, MAC addresses and private IP addresses are replaced with
+stable labels (`device-3`, `mac-2`, `lan-ip-5`) unless the user unticks that;
+sites visited are only included if ticked; the password hash and sessions are
+never included.
+
 ## Tests
 
 ```bash
-pytest -q                               # 180 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
+pytest -q                               # 188 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 ```
 
@@ -548,7 +573,7 @@ unlisted Tor relays, and a CDN-style tunnel held as an unknown destination.
 It also drives the setup wizard: interfaces detected, a category change taking
 effect live for the kid, and a real self-restart that must come back as the
 same process with the inspector running and no stale fail-open rule.
-It switches protections per group on the live gateway (Tor off for the console only, "allow everything" still blocking VPN ports until VPNs are switched off). It also opens the dashboard by name over port 80 (and checks a child can find the name but not open it). It runs the gateway the way the Pi does (installed, under the supervisor) and updates it from a git repository while the network is in use, with zero failed lookups or connections. **218 checks pass.** Finally it kills the service and
+It switches protections per group on the live gateway (Tor off for the console only, "allow everything" still blocking VPN ports until VPNs are switched off). It also opens the dashboard by name over port 80 (and checks a child can find the name but not open it). It runs the gateway the way the Pi does (installed, under the supervisor) and updates it from a git repository while the network is in use, with zero failed lookups or connections. It also downloads the diagnostics bundle and checks it holds the firewall rules and logs, but not the child's real address. **224 checks pass.** Finally it kills the service and
 confirms kids' access fails closed while the parent is unaffected. (The IPv6 router check is
 skipped on kernels booted without IPv6.)
 

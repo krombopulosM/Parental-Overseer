@@ -6,3 +6,5 @@ guardian.db
 guardian.db-*
 config.local.yaml
 blocklists/cache/
+logs/
+*.zip

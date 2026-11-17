@@ -215,6 +215,14 @@ elif op["do"] == "raw":
     r = c.get(op["path"])
     print(json.dumps({"status": r.status_code, "len": len(r.text),
                       "markers": [m for m in op["body"]["markers"] if m in r.text]}))
+elif op["do"] == "zip":
+    import io, zipfile
+    r = c.post(op["path"], json=op["body"].get("opts", {}), headers=H)
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    blobs = {n: z.read(n) for n in z.namelist()}
+    print(json.dumps({"status": r.status_code, "disposition": r.headers.get("content-disposition"),
+                      "names": sorted(blobs), "size": len(r.content),
+                      "found": {s: sorted(n for n, b in blobs.items() if s.encode() in b) for s in op["body"]["search"]}}))
 elif op["do"] == "badlogin":
     for _ in range(op["body"]["n"]):
         httpx.post("http://10.50.0.1:8080/api/login", json={"password": "wrong-guess"}, headers=H)
@@ -699,6 +707,26 @@ def main():
         record(sec, "back on the previous version", st.get("current", {}).get("version") == v1["version"],
                st.get("current"))
         run_suite("pg-kid", "kid_basic", sec + ": filtering after the rollback")
+
+        # ---- Diagnostics export (from the parent's laptop, as the dashboard button does)
+        sec = "Diagnostics export"
+        kid_mac = "02:00:00:00:00:10"
+        d = api("zip", "/api/diagnostics", {"opts": {"note": "e2e: checking the export"},
+                                            "search": [kid_mac, "10.50.0.10", "table inet guardian", "update complete",
+                                                       "[ready] serving", "admin_hash", "e2e: checking the export"]})
+        record(sec, "bundle downloads as a zip", d["status"] == 200 and "attachment" in (d["disposition"] or ""),
+               (d["status"], d["size"]))
+        record(sec, "contains the firewall rules", "system/nft-ruleset.txt" in d["found"]["table inet guardian"],
+               d["found"]["table inet guardian"])
+        record(sec, "contains the gateway's and the supervisor's logs (with the update hand-over)",
+               "logs/gateway.log" in d["found"]["[ready] serving"] and "logs/supervisor.log" in d["found"]["update complete"],
+               (d["found"]["[ready] serving"], d["found"]["update complete"]))
+        record(sec, "the child's device address and MAC are anonymised everywhere",
+               d["found"][kid_mac] == [] and d["found"]["10.50.0.10"] == [], (d["found"][kid_mac], d["found"]["10.50.0.10"]))
+        record(sec, "no password hash in it", d["found"]["admin_hash"] == [] and "NOTE.txt" in d["found"]["e2e: checking the export"])
+        out = sh(f"GUARDIAN_DATA_DIR={DATA} {PY} {INST}/current/run.py --diagnostics {W}", check=False)
+        record(sec, "the command-line version works too (for when the dashboard won't open)",
+               out.returncode == 0 and "Diagnostics written to" in out.stdout, out.stdout[-200:] + out.stderr[-200:])
 
         # ---- Tamper resistance: kill the inspector
         gw.terminate()
