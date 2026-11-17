@@ -30,7 +30,10 @@ import subprocess
 import sys
 import time
 
-_HELD = {signal.SIGTERM, signal.SIGINT, signal.SIGUSR1}
+# Signals held across a re-launch. SIGUSR1 only exists on Linux/macOS - the
+# supervisor itself only runs there, but this module is imported everywhere.
+_HELD = {s for s in (getattr(signal, n, None) for n in ("SIGTERM", "SIGINT", "SIGUSR1")) if s is not None}
+SUPPORTED = hasattr(signal, "SIGUSR1") and hasattr(os, "WNOHANG")
 READY_TIMEOUT = 120          # a Raspberry Pi loading big lists can take a while
 STOP_TIMEOUT = 25
 CRASH_WINDOW = 600           # a new version crashing twice within this is rolled back

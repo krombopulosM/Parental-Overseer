@@ -124,7 +124,9 @@ def read_version(release_dir: str) -> str:
 
 # ------------------------------------------------------------------ git
 def git(*args, cwd=None, timeout=180) -> str:
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="/bin/true")
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")   # never wait for a password
+    if os.name != "nt":
+        env["GIT_ASKPASS"] = "/bin/true"
     try:
         p = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:

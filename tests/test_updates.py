@@ -328,3 +328,49 @@ def test_worker_crash_is_restarted(sup_env):
     os.kill(pid, signal.SIGKILL)
     wait_for(lambda: e.state()["worker_pid"] != pid, timeout=20)
     assert len([x for x in e.events() if x["ev"] == "start"]) == 2
+
+
+# ------------------------------------------------------------------ Windows (no Unix-only signals)
+WINDOWS_SIM = r'''
+import os, signal, sys, tempfile, time, socket, subprocess   # stdlib loaded as on Windows
+for name in ("SIGUSR1", "SIGUSR2", "SIGKILL", "SIGHUP", "SIGCHLD", "pthread_sigmask"):
+    if hasattr(signal, name):
+        delattr(signal, name)                      # Windows has none of these
+sys.path.insert(0, sys.argv[1])
+import importlib, pkgutil, guardian
+for m in pkgutil.walk_packages(guardian.__path__, "guardian."):
+    if m.name not in ("guardian.gateway.nfq",):
+        importlib.import_module(m.name)
+from guardian.selftest import run as selftest
+assert selftest(os.path.join(sys.argv[1], "config.yaml")) == 0
+from guardian import supervisor
+assert supervisor.SUPPORTED is False and supervisor.under_supervisor() is False
+data = tempfile.mkdtemp()
+os.environ["GUARDIAN_DATA_DIR"] = data
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+    s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+open(os.path.join(data, "config.local.yaml"), "w").write(
+    f"mode: monitor\ndns:\n  listen_host: 127.0.0.1\n  listen_port: {port}\n"
+    "updates:\n  enabled: false\n")
+from guardian.config import load_config
+from guardian.app import Guardian
+cfg = load_config(os.path.join(sys.argv[1], "config.yaml"))
+g = Guardian(cfg)
+g.monitor = g.detector = None
+g.start(download_lists=False)                      # the call that crashed on Windows
+time.sleep(0.5)
+st = g.updater.status()
+assert st["managed"] is False, st
+g.shutdown(handover=False)
+print("WINDOWS-SIM-OK")
+'''
+
+
+def test_starts_without_unix_only_signals(tmp_path):
+    out = subprocess.run([sys.executable, "-c", WINDOWS_SIM, ROOT], capture_output=True, text=True, timeout=120)
+    assert "WINDOWS-SIM-OK" in out.stdout, out.stdout[-2000:] + out.stderr[-2000:]
+    # --supervise explains itself instead of crashing
+    code = ("import signal, sys, runpy; delattr(signal, 'SIGUSR1'); "
+            f"sys.argv = ['run.py', '--supervise']; runpy.run_path({os.path.join(ROOT, 'run.py')!r}, run_name='__main__')")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert "runs on the Raspberry Pi" in out.stderr, out.stderr[-1000:]

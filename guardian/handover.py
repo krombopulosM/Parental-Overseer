@@ -83,7 +83,11 @@ def web_socket(host: str, port: int) -> socket.socket:
     """A listening socket for the dashboard that the next version can share."""
     fam = socket.AF_INET6 if ":" in host else socket.AF_INET
     s = socket.socket(fam, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if os.name == "nt":
+        # On Windows SO_REUSEADDR would let a second copy silently share the port.
+        s.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_EXCLUSIVEADDRUSE", -5), 1)
+    else:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     _reuseport(s)
     s.bind((host, port))
     s.listen(128)

@@ -59,7 +59,10 @@ def main():
     args = ap.parse_args()
 
     if args.supervise:
-        from guardian.supervisor import Supervisor
+        from guardian.supervisor import SUPPORTED, Supervisor
+        if not SUPPORTED:
+            sys.exit("--supervise (seamless updates) runs on the Raspberry Pi / Linux. On this computer, "
+                     "start the gateway with: python run.py")
         data = default_data_dir()
         os.makedirs(data, exist_ok=True)
         passthrough = ["--no-download"] if args.no_download else []
