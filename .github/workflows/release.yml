@@ -2,7 +2,9 @@
 # publishes them as a GitHub release.
 #
 #   - push a tag like v2.2.0 (matching the VERSION file), or
-#   - run it by hand from the Actions tab (makes a draft release).
+#   - run it by hand from the Actions tab: give a tag (e.g. v2.2.0) to publish a
+#     release - the tag is created on the commit that was built - or leave it
+#     empty for a draft.
 #
 # The Card Maker downloads releases/latest/download/os_list.json, so the
 # newest published release is what parents get.
@@ -12,9 +14,17 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create, matching the VERSION file (e.g. v2.2.0). Empty: a draft release."
+        required: false
+        default: ""
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
 
 jobs:
   image:
@@ -23,6 +33,10 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+      - name: Tag matches VERSION
+        if: env.TAG != ''
+        run: |
+          [ "$TAG" = "v$(cat VERSION)" ] || { echo "::error::tag $TAG doesn't match VERSION $(cat VERSION)"; exit 1; }
       - name: Tools
         run: |
           sudo apt-get update -q
@@ -30,11 +44,11 @@ jobs:
           [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ] || sudo update-binfmts --enable qemu-aarch64
       - name: Tests
         run: |
-          python3 -m pip install -q -r requirements.txt pytest
+          python3 -m pip install -q -r requirements-dev.txt
           python3 -m pytest -q
       - name: Build the image
         env:
-          RELEASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+          RELEASE_URL: https://github.com/${{ github.repository }}/releases/${{ env.TAG != '' && format('download/{0}', env.TAG) || 'latest/download' }}
           UPDATE_URL: https://github.com/${{ github.repository }}.git
         run: |
           sudo --preserve-env=RELEASE_URL,UPDATE_URL image/build.sh --out "$PWD/out"
@@ -64,7 +78,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -q pyinstaller==6.11.1 pytest pyyaml
+      - run: python -m pip install -q pyinstaller==6.11.1 -r requirements-dev.txt
       - name: Tests (Card Maker)
         run: python -m pytest -q tests/test_cardmaker.py
       - name: Build (Windows)
@@ -104,7 +118,10 @@ jobs:
       - run: ls -la assets
       - uses: softprops/action-gh-release@v2
         with:
-          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          draft: ${{ env.TAG == '' }}
+          tag_name: ${{ env.TAG != '' && env.TAG || format('draft-{0}', github.run_number) }}
+          name: ${{ env.TAG != '' && format('Parental Gateway {0}', env.TAG) || 'Draft build' }}
+          target_commitish: ${{ github.sha }}
           files: assets/*
           body: |
             **New to Parental Gateway?** Download the Card Maker for your computer, insert a microSD card
