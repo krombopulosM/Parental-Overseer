@@ -1029,7 +1029,7 @@ function showLogin(sess) {
   $("#login-pw2").hidden = !setupMode;
   $("#login-title").textContent = setupMode ? "Welcome" : "Parental Gateway";
   $("#login-sub").textContent = setupMode
-    ? (sess.setup_allowed ? "Choose a dashboard password (8+ characters)." : "Set a password on the gateway first: python run.py --set-password")
+    ? (sess.setup_allowed ? "Choose a dashboard password (8+ characters)." : (sess.setup_hint || "Set a password on the gateway first: python run.py --set-password"))
     : "Sign in to manage your network.";
   $("#login-btn").textContent = setupMode ? "Set password" : "Sign in";
   $("#login-btn").disabled = setupMode && !sess.setup_allowed;

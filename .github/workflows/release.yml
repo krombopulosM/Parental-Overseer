@@ -1,0 +1,114 @@
+# Builds the ready-made Raspberry Pi card image and the Card Maker apps, and
+# publishes them as a GitHub release.
+#
+#   - push a tag like v2.2.0 (matching the VERSION file), or
+#   - run it by hand from the Actions tab (makes a draft release).
+#
+# The Card Maker downloads releases/latest/download/os_list.json, so the
+# newest published release is what parents get.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  image:
+    name: Pi card image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-user-static binfmt-support parted mtools zerofree e2fsprogs xz-utils
+          [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ] || sudo update-binfmts --enable qemu-aarch64
+      - name: Tests
+        run: |
+          python3 -m pip install -q -r requirements.txt pytest
+          python3 -m pytest -q
+      - name: Build the image
+        env:
+          RELEASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+          UPDATE_URL: https://github.com/${{ github.repository }}.git
+        run: |
+          sudo --preserve-env=RELEASE_URL,UPDATE_URL image/build.sh --out "$PWD/out"
+          sudo chown -R "$USER" out
+          rm -f out/*raspios*        # the downloaded base image
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: out/*
+          retention-days: 7
+
+  cardmaker:
+    name: Card Maker (${{ matrix.os }})
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            asset: ParentalGatewayCardMaker-Windows.exe
+          - os: macos-latest
+            asset: ParentalGatewayCardMaker-macOS.zip
+          - os: ubuntu-22.04
+            asset: ParentalGatewayCardMaker-Linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -q pyinstaller==6.11.1 pytest pyyaml
+      - name: Tests (Card Maker)
+        run: python -m pytest -q tests/test_cardmaker.py
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        # --uac-admin: Windows asks for administrator permission once, when it opens (needed to write a card).
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --uac-admin --name ParentalGatewayCardMaker `
+            --paths . --collect-submodules cardmaker cardmaker/__main__.py
+          Move-Item dist/ParentalGatewayCardMaker.exe "${{ matrix.asset }}"
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --windowed --name "Parental Gateway Card Maker" \
+            --osx-bundle-identifier org.parentalgateway.cardmaker \
+            --paths . --collect-submodules cardmaker cardmaker/__main__.py
+          ditto -c -k --keepParent "dist/Parental Gateway Card Maker.app" "${{ matrix.asset }}"
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          pyinstaller --noconfirm --onefile --name ParentalGatewayCardMaker \
+            --paths . --collect-submodules cardmaker cardmaker/__main__.py
+          mv dist/ParentalGatewayCardMaker "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cardmaker-${{ runner.os }}
+          path: ${{ matrix.asset }}
+          retention-days: 7
+
+  release:
+    needs: [image, cardmaker]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - run: ls -la assets
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          files: assets/*
+          body: |
+            **New to Parental Gateway?** Download the Card Maker for your computer, insert a microSD card
+            (16 GB+) or USB drive, choose a dashboard password and click *Write card*. Put the card in a
+            Raspberry Pi 4 or 5, connect the cables, switch it on, then open http://family.local.
+
+            Already running one? It updates itself - nothing to do.

@@ -6,11 +6,13 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import threading
 import time
 
 ITERATIONS = 310_000
+HASH_RE = re.compile(r"^pbkdf2_sha256\$\d{6,7}\$[0-9a-f]{32}\$[0-9a-f]{64}$")
 SESSION_HOURS = 12
 
 
@@ -45,12 +47,26 @@ class Auth:
     def has_password(self) -> bool:
         return bool(self.db.get_setting("admin_hash"))
 
-    def set_password(self, password: str):
+    @staticmethod
+    def make_hash(password: str) -> str:
+        """The stored form of a password (also used by the Card Maker, which puts it
+        on the card so the plain password never leaves the parent's computer)."""
         if len(password or "") < 8:
             raise ValueError("password must be at least 8 characters")
         salt = os.urandom(16)
         digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, ITERATIONS)
-        self.db.set_setting("admin_hash", f"pbkdf2_sha256${ITERATIONS}${salt.hex()}${digest.hex()}")
+        return f"pbkdf2_sha256${ITERATIONS}${salt.hex()}${digest.hex()}"
+
+    def set_password(self, password: str):
+        self._store(self.make_hash(password))
+
+    def set_password_hash(self, stored: str):
+        if not HASH_RE.match(stored or "") or int(stored.split("$")[1]) < 100_000:
+            raise ValueError("not a password hash from the Card Maker")
+        self._store(stored)
+
+    def _store(self, stored: str):
+        self.db.set_setting("admin_hash", stored)
         with self._lock:
             self._sessions.clear()          # changing the password logs everyone out
             self._save_sessions()

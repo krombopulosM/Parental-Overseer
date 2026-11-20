@@ -1,0 +1,12 @@
+[Unit]
+Description=Parental Gateway: a network port was plugged in
+After=parental-gateway-appliance.service
+Requisite=parental-gateway-appliance.service
+
+[Service]
+Type=oneshot
+Environment=GUARDIAN_DATA_DIR=/opt/parental-gateway/data
+WorkingDirectory=/opt/parental-gateway/current
+# Give a new USB adapter a moment to come up, then re-check which port is which.
+ExecStartPre=/bin/sleep 5
+ExecStart=/opt/parental-gateway/current/.venv/bin/python -m guardian.appliance boot --restart-if-changed

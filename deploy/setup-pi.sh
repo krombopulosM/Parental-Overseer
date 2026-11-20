@@ -7,7 +7,7 @@
 #   sudo ./deploy/setup-pi.sh
 # It lists the network interfaces and asks which faces the internet and which
 # faces your home. Or answer up front with environment variables, e.g.:
-#   sudo WAN_IF=eth0 LAN_IF=eth1 LAN_IP=192.168.50.1 ./deploy/setup-pi.sh
+#   sudo WAN_IF=eth0 LAN_IF=eth1 LAN_IP=192.168.50.1 ./deploy/setup-pi.sh   (DHCP: .100-.250)
 #
 # Safe to re-run: it updates the installed copy and leaves your database,
 # password and config.local.yaml alone.
@@ -52,8 +52,6 @@ WAN_IF=${WAN_IF:-$DEF_WAN}
 LAN_IF=${LAN_IF:-$DEF_LAN}
 LAN_IP=${LAN_IP:-192.168.50.1}
 LAN_PREFIX=${LAN_PREFIX:-24}
-DHCP_START=${DHCP_START:-192.168.50.100}
-DHCP_END=${DHCP_END:-192.168.50.250}
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 
 [ "$(id -u)" = 0 ] || { echo "Please run with sudo."; exit 1; }
@@ -133,54 +131,8 @@ printf "nf_conntrack\nnfnetlink_queue\nnft_queue\n" > /etc/modules-load.d/parent
 for m in nf_conntrack nfnetlink_queue nft_queue; do modprobe "$m" 2>/dev/null || true; done
 sysctl -q --system || true
 
-echo "==> LAN address $LAN_IP/$LAN_PREFIX on $LAN_IF"
-if command -v nmcli >/dev/null && systemctl is-active -q NetworkManager; then
-  nmcli -t con delete pg-lan >/dev/null 2>&1 || true
-  nmcli con add type ethernet ifname "$LAN_IF" con-name pg-lan ipv4.method manual \
-    ipv4.addresses "$LAN_IP/$LAN_PREFIX" ipv6.method disabled connection.autoconnect yes >/dev/null
-  nmcli con up pg-lan >/dev/null || true
-elif [ -f /etc/dhcpcd.conf ]; then
-  grep -q "# parental-gateway" /etc/dhcpcd.conf || cat >> /etc/dhcpcd.conf <<EOF
-
-# parental-gateway
-interface $LAN_IF
-static ip_address=$LAN_IP/$LAN_PREFIX
-nohook wpa_supplicant
-EOF
-  systemctl restart dhcpcd || true
-else
-  echo "   !! Couldn't find NetworkManager or dhcpcd - give $LAN_IF the address $LAN_IP/$LAN_PREFIX yourself."
-fi
-
-echo "==> DHCP server (dnsmasq hands out addresses; DNS is answered by the gateway)"
-cat > /etc/dnsmasq.d/parental-gateway.conf <<EOF
-port=0
-interface=$LAN_IF
-bind-interfaces
-dhcp-range=$DHCP_START,$DHCP_END,12h
-dhcp-option=option:router,$LAN_IP
-dhcp-option=option:dns-server,$LAN_IP
-# search domain: "family" alone finds family.home.arpa (the dashboard)
-dhcp-option=option:domain-name,home.arpa
-dhcp-option=option:domain-search,home.arpa
-dhcp-authoritative
-dhcp-leasefile=/var/lib/misc/dnsmasq.leases
-EOF
-systemctl enable -q dnsmasq
-systemctl restart dnsmasq
-
-echo "==> Announcing the dashboard name on the home network (mDNS)"
-# Only on the home side: nothing about this network is announced towards the ISP router.
-AVAHI_CONF=/etc/avahi/avahi-daemon.conf
-if [ -f "$AVAHI_CONF" ]; then
-  if grep -q "^#\?allow-interfaces=" "$AVAHI_CONF"; then
-    sed -i "s/^#\?allow-interfaces=.*/allow-interfaces=$LAN_IF/" "$AVAHI_CONF"
-  else
-    sed -i "/^\[server\]/a allow-interfaces=$LAN_IF" "$AVAHI_CONF"
-  fi
-fi
-systemctl enable -q avahi-daemon 2>/dev/null || true
-systemctl restart avahi-daemon 2>/dev/null || true
+echo "==> Network: home side $LAN_IF ($LAN_IP/$LAN_PREFIX, DHCP, mDNS), internet side $WAN_IF"
+bash "$APP_DIR/current/deploy/netsetup.sh" gateway "$WAN_IF" "$LAN_IF" "$LAN_IP/$LAN_PREFIX"
 DASH_NAME=$("$PY" - "$APP_DIR/current" <<'PY' 2>/dev/null || echo family
 import sys; sys.path.insert(0, sys.argv[1])
 from guardian.config import load_config
@@ -188,13 +140,6 @@ from guardian.localname import base_name
 print(base_name(load_config(sys.argv[1] + "/config.yaml")))
 PY
 )
-
-if ss -lunp 2>/dev/null | grep -q "systemd-resolve.*:53 "; then
-  echo "==> Freeing port 53 from systemd-resolved's stub listener"
-  mkdir -p /etc/systemd/resolved.conf.d
-  printf "[Resolve]\nDNSStubListener=no\n" > /etc/systemd/resolved.conf.d/parental-gateway.conf
-  systemctl restart systemd-resolved
-fi
 
 echo "==> Diagnostics command (for when the dashboard won't open)"
 cat > /usr/local/bin/parental-gateway-diagnostics <<WRAPPER

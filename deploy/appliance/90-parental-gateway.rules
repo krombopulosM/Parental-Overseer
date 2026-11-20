@@ -1,0 +1,4 @@
+# A wired network port appeared or was renamed (e.g. the USB Ethernet adapter was
+# plugged in, or got its final name): re-check which port is which. Full gateway
+# mode starts once there are two; the gateway restarts if its ports changed.
+ACTION=="add|move", SUBSYSTEM=="net", KERNEL!="lo|wl*|veth*|br*|docker*|tap*|tun*", TEST=="device", RUN+="/usr/bin/systemctl --no-block start parental-gateway-replug.service"

@@ -91,12 +91,18 @@ def create_app(g) -> FastAPI:
         return FileResponse(os.path.join(static, "favicon.png"), media_type="image/png",
                             headers={"Cache-Control": "max-age=86400"})
 
+    def setup_allowed(ip: str) -> tuple[bool, str]:
+        if ip in ("127.0.0.1", "::1"):
+            return True, ""
+        from .appliance import setup_from_network
+        return setup_from_network(g.cfg, ip)
+
     @app.get("/api/session")
     def session(req: Request):
         ip = client_ip(req)
-        local = ip in ("127.0.0.1", "::1")
+        allowed, hint = setup_allowed(ip) if not auth.has_password() else (False, "")
         return {"authenticated": auth.check(req.cookies.get(COOKIE)),
-                "needs_setup": not auth.has_password(), "setup_allowed": local,
+                "needs_setup": not auth.has_password(), "setup_allowed": allowed, "setup_hint": hint,
                 "setup_complete": g.db.get_setting("setup_complete") is not None,
                 "mode": g.mode}
 
@@ -104,9 +110,10 @@ def create_app(g) -> FastAPI:
     async def setup(req: Request, resp: Response):
         if auth.has_password():
             raise HTTPException(409, "already set up")
-        if client_ip(req) not in ("127.0.0.1", "::1"):
-            raise HTTPException(403, "first-time setup must be done on the gateway itself "
-                                     "(or run: python run.py --set-password)")
+        allowed, hint = setup_allowed(client_ip(req))
+        if not allowed:
+            raise HTTPException(403, hint or "first-time setup must be done on the gateway itself "
+                                             "(or run: python run.py --set-password)")
         body = await req.json()
         try:
             auth.set_password(body.get("password", ""))

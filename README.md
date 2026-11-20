@@ -36,7 +36,62 @@ gateway makes sure it stays visible.
 The same code runs on your **Windows PC** (monitor mode, for development) and
 on the **Pi** (gateway mode, full enforcement).
 
+**Quickest start:** [make a ready-made card](#the-ready-made-card-easiest) with
+the Card Maker, put it in a Raspberry Pi, plug in the cables, and switch it on.
+
 ---
+
+## The ready-made card (easiest)
+
+No Linux, no typing commands. You need a **Raspberry Pi 4 or 5** (2 GB is
+plenty), a **microSD card** (16 GB or more) or a **USB stick/SSD**, and a **USB
+Ethernet adapter** for the Pi's second network port.
+
+1. Download the **Card Maker** for your computer from the
+   [latest release](https://github.com/krombopulosM/Parental-Overseer/releases/latest)
+   (Windows, macOS or Linux) and open it.
+2. Insert the card, pick it in the list, choose a **dashboard password**, click
+   **Write card**. It downloads the latest version, writes it, and reads the
+   whole card back to check it.
+3. Put the card in the Pi. Plug one network cable into your **internet
+   router** and the other into your **Wi-Fi access point** (either port: the Pi
+   works out which is which). Plug in the power.
+4. After about two minutes open **http://family.local** on a phone or computer
+   at home, sign in, and the setup wizard does the rest.
+
+What's on the card is a **dedicated system** built from Raspberry Pi OS Lite
+that runs only the gateway:
+
+| | |
+|---|---|
+| Set-up questions | None. The password and dashboard name come from the Card Maker; the network ports are detected (the one where your router hands out an address is the internet side) |
+| Only one port plugged in? | It runs as a DNS filter on your existing network until you plug in the USB adapter, then switches to full gateway mode by itself |
+| Removed | Desktop/display stack, sound, camera, Bluetooth and Wi-Fi radios and drivers, cloud-init, disk automounting, manual pages |
+| Fewer card writes | System logs kept in memory, no access-time updates |
+| Updates | The gateway updates itself (no downtime); Debian/Raspberry Pi security updates install automatically, restarting at 04:30 when a kernel fix needs it (about a minute offline) |
+| Remote login | Off. Technical users can add an SSH key in the Card Maker (*Advanced*) to log in as `pgadmin` |
+
+**Booting from USB** works too: write a USB stick or SSD instead of a microSD card
+with the Card Maker. Raspberry Pi 4, 400 and 5 start from USB when there is no SD
+card (Pi 3B+ also can; a Pi 4 bought before 2020 may need its bootloader updated
+once with Raspberry Pi Imager). Just copying files onto an existing stick
+("drag and drop") can't make it startable: the system needs its own partition
+layout, which is what the Card Maker writes.
+
+**Forgot the password?** Take the card out, put it in your computer, and use the
+Card Maker's *Change a card's password* tab. If you didn't set a password in the
+Card Maker, the dashboard lets you choose one from a device at home during the
+first 30 minutes after the Pi starts (restarting the Pi opens that window again).
+
+**Prefer Raspberry Pi Imager or balenaEtcher?** Download the `.img.xz` from the
+release and write it with *Use custom*; then choose the password in the dashboard
+as above. `cardmaker write --output card.img` also makes a ready-made `.img`
+with your settings in it.
+
+Building the image yourself (Linux, root): `sudo image/build.sh` (see the top of
+the script); `sudo image/qemu-test.sh image/out/*.img.xz` boots it in an
+emulated Pi between a fake internet and a child's device and checks it works.
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed.
 
 ## How the anti-bypass works
 
@@ -406,7 +461,10 @@ It runs the same inspector the Pi uses and lists every blocked connection and wh
 
 ---
 
-## Deploy on the Raspberry Pi (gateway mode)
+## Deploy on the Raspberry Pi yourself (gateway mode)
+
+The [ready-made card](#the-ready-made-card-easiest) is easier; this is for
+an existing Raspberry Pi OS installation.
 
 **Hardware:** a Raspberry Pi 4 or 5 (2 GB+), a USB 3 gigabit Ethernet adapter
 for the second port, and a Wi-Fi access point (or your current router set to
@@ -645,10 +703,19 @@ never included.
 ## Tests
 
 ```bash
-pytest -q                               # 211 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
+pytest -q                               # 238 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard, card...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 sudo python3 tests/e2e/bench.py         # Linux only: speed of a child's vs. an adult's connections
+sudo image/qemu-test.sh <image.img.xz>  # Linux only: boot the card image in an emulated Pi (slow)
 ```
+
+The card test writes the image with the Card Maker (password and SSH key),
+boots it in QEMU's emulated Raspberry Pi 3 between a fake internet and a child's
+device, and checks that it sets itself up with nobody touching it: it works out
+which port is which, hands the child's device an address, answers the dashboard
+name, accepts the Card Maker's password (and not a wrong one), forwards an allowed
+site, refuses a connection to a bare IP address, keeps the ISP router's network
+out of reach, and removed the password hash from the card.
 
 The end-to-end test builds a miniature home network out of Linux network
 namespaces: two kids' devices, a parent's laptop, a console, the real gateway
@@ -699,8 +766,12 @@ guardian/
   handover.py          shared ports, socket steering, the once-only-jobs lock
   selftest.py          `run.py --selftest`: a new version must pass before it goes live
   environment.py       platform / interface / readiness detection for the wizard
-  webapp.py, static/   dashboard (static/wizard.js: the setup wizard)
-deploy/                setup-pi.sh, systemd unit
+  webapp.py, static/   dashboard (static/wizard.js: the setup wizard, static/devices.js: the device table)
+  appliance.py         the ready-made card: its settings file, which port is which, the setup window
+deploy/                setup-pi.sh, netsetup.sh (home-side address, DHCP, mDNS), systemd units
+deploy/appliance/      the card's start-up service and USB-adapter hot-plug rule
+image/                 build.sh (makes the card image), customize.sh (runs inside it), qemu-test.sh
+cardmaker/             the Card Maker app (window + command line): writes and checks cards
 tools/replay.py        run the inspector over a Wireshark capture
 tools/install.py       install / update into the releases layout (used by setup-pi.sh)
 tests/                 unit tests + e2e/

@@ -1,0 +1,18 @@
+[Unit]
+Description=Parental Gateway: settings from the card, network ports
+# Runs before the gateway, DHCP and mDNS so they start with the right ports.
+After=NetworkManager.service local-fs.target
+Wants=NetworkManager.service
+Before=parental-gateway.service dnsmasq.service avahi-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=GUARDIAN_DATA_DIR=/opt/parental-gateway/data
+Environment=SYSTEMCTL_NO_BLOCK=1
+WorkingDirectory=/opt/parental-gateway/current
+ExecStart=/opt/parental-gateway/current/.venv/bin/python -m guardian.appliance boot
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

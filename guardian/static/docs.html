@@ -83,13 +83,32 @@ gateway, copying a parent's device identity, rogue network settings).</p>
 <h2>Setting it up</h2>
 <h3>What you need</h3>
 <ul>
-  <li>A Raspberry Pi 4 or 5 (2 GB or more) with Raspberry Pi OS (64-bit).</li>
+  <li>A Raspberry Pi 4 or 5 (2 GB or more) and a microSD card (16 GB+) or a USB stick / SSD.</li>
   <li>A USB 3 gigabit Ethernet adapter - the Pi needs two network ports.</li>
   <li>A Wi-Fi access point, or your existing Wi-Fi router switched to <i>access point / bridge mode</i>.</li>
 </ul>
+<h3 id="card">The easy way: the ready-made card</h3>
+<ol>
+  <li>On your computer, open the <b>Card Maker</b> (download it from the project's latest release).</li>
+  <li>Insert the card, pick it, choose your dashboard password and press <b>Write card</b>. It downloads
+    Parental Gateway, writes it and checks every byte.</li>
+  <li>Put the card in the Pi. One cable to your internet router, the other to your Wi-Fi access point - either
+    port, the Pi works out which is which. Plug in the power.</li>
+  <li>After about two minutes open <b>http://family.local</b> and sign in.</li>
+</ol>
+<p>The card holds a cut-down system that runs only Parental Gateway: no desktop, sound, camera, Bluetooth or Wi-Fi
+radios, and nothing to configure. With only one cable plugged in it filters lookups on your existing network
+(point your router's DNS at it) until the USB adapter is added, then becomes the full gateway on its own.
+System security updates install themselves; a kernel fix restarts the Pi at 04:30 (about a minute offline).</p>
+<p><b>Forgot the password?</b> Put the card in your computer and use the Card Maker's <i>Change a card's
+password</i>. If no password was set on the card, you can choose one in the dashboard from a device at home in
+the first 30 minutes after the Pi starts.</p>
+<p><b>USB instead of a card:</b> write a USB stick or SSD the same way. Raspberry Pi 4, 400 and 5 start from USB
+when there's no SD card in.</p>
 <h3>Wiring</h3>
-<p>ISP router → Pi's built-in Ethernet port. Pi's USB Ethernet adapter → Wi-Fi access point. Every device then connects to that access point.</p>
-<h3>Installing</h3>
+<p>ISP router → Pi's built-in Ethernet port. Pi's USB Ethernet adapter → Wi-Fi access point. Every device then connects to that access point.
+(The ready-made card also works with the cables the other way round.)</p>
+<h3>Installing on your own Raspberry Pi OS instead</h3>
 <p>On the Pi, from the project folder, run <code>sudo ./deploy/setup-pi.sh</code>. It lists the Pi's network ports and
 asks which one goes to the internet (your ISP router) and which to your home (the access point) - suggesting the
 likely answers. It then installs everything, gives the home side the address <code>192.168.50.1</code>, hands out
