@@ -17,12 +17,13 @@ from .alerts import KINDS
 from .auth import Auth
 from .activity import CLASSES
 from .confidence import CATEGORIES, KIND_META
+from .schedule import FOREVER
 from .services import registrable_domain, service_label
 
 COOKIE = "pg_session"
 _DOMAIN_RE = re.compile(r"^[a-z0-9*_.-]+\.[a-z0-9-]+$")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-_STATIC = {"app.js": None, "wizard.js": None, "style.css": None, "docs.html": None,
+_STATIC = {"app.js": None, "devices.js": None, "wizard.js": None, "style.css": None, "docs.html": None,
            "manifest.webmanifest": "application/manifest+json", "icon-192.png": None, "icon-512.png": None,
            "icon-maskable-512.png": None, "apple-touch-icon.png": None, "favicon.png": None}
 # Everything but the Guide loads before sign-in (the app shell, icons, the manifest).
@@ -168,6 +169,8 @@ def create_app(g) -> FastAPI:
                 "filtered": g.cfg["groups"][grp]["filtered"],
                 "online": (d["last_seen"] or 0) > now - 300, "last_seen": d["last_seen"],
                 "paused": paused, "paused_reason": why, "suspect": bool(d.get("suspect")),
+                "blocked_all": (d.get("paused_until") or 0) >= FOREVER,
+                "first_seen": d.get("first_seen"),
                 "minutes_today": (online.get(did) or {}).get("minutes", 0),
                 "bytes_up": (data.get(did) or {}).get("bytes_up") or 0,
                 "bytes_down": (data.get(did) or {}).get("bytes_down") or 0,
@@ -234,8 +237,16 @@ def create_app(g) -> FastAPI:
                 "default_group": g.cfg["default_group"]}
 
     @app.get("/api/devices")
-    def devices():
-        return {"devices": devices_view()}
+    def devices(req: Request):
+        rows = devices_view()
+        ip = client_ip(req)
+        try:
+            you, mac = g.policy.identity.device_id_for(ip)
+        except Exception:
+            you, mac = None, None
+        if not mac:                     # MAC not known here: the device last seen at this address
+            you = next((d["device_id"] for d in rows if d["ip"] == ip), you)
+        return {"devices": rows, "you": you}
 
     @app.get("/api/devices/{device_id}")
     def device(device_id: str):
@@ -287,6 +298,14 @@ def create_app(g) -> FastAPI:
             if grp is not None and grp not in g.cfg["groups"]:
                 raise HTTPException(400, "unknown group")
             g.policy.set_device_group(device_id, grp)
+        g.device_changed()
+        return {"ok": True}
+
+    @app.delete("/api/devices/{device_id}")
+    def forget_device(device_id: str):
+        if not g.db.get_device(device_id):
+            raise HTTPException(404)
+        g.db.forget_device(device_id)
         g.device_changed()
         return {"ok": True}
 

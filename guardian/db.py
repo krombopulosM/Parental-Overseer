@@ -290,6 +290,12 @@ class DB:
             self._w.commit()
             return True
 
+    def forget_device(self, device_id):
+        """Remove a device from the list (its name, group and pause). Its history stays;
+        if it's seen again it comes back as a new device in the default group."""
+        self.flush()
+        self.execute("DELETE FROM devices WHERE device_id=?", (device_id,))
+
     def set_paused_until(self, device_id, until):
         self.execute("UPDATE devices SET paused_until=? WHERE device_id=?", (until, device_id))
 

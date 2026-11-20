@@ -567,11 +567,22 @@ would cut the dashboard off, so that stays in `setup-pi.sh`.
     sites blocked, a 7-day trend, its most certain alert, and a status of
     **Clean / Curious / Persistent / Tampering**;
   - your review history.
-- **On a phone:** a bottom tab bar (Home, Live, Devices, Alerts, More), device
-  cards with one-tap pause, alert actions under the text, 16px inputs (no zooming
+- **On a phone:** a bottom tab bar (Home, Live, Devices, Alerts, More), alert actions under the text, 16px inputs (no zooming
   in on iPhone), and *Add to Home Screen* support with an app icon.
-- **Devices:** set groups, rename devices, see online time / data / blocks,
-  pause a device.
+- **Devices:** a table like a desktop file manager: status, group, address,
+  online time, data, blocks and alerts per device, sortable by any column, with
+  search and filters (online, new, paused, by group).
+  - **Right-click** a device (or **press and hold** it on a phone, or use its
+    ⋯ button) for: Open, Watch live, Rename, Move to group, Settings…, Pause
+    internet (15 min / 1 h / 2 h / until 7:00), **Block all traffic** (until you
+    unblock it), Resume, Copy IP / MAC, and Forget device.
+  - Click selects; **Ctrl/Shift-click** selects several and the menu (or the bar
+    above the table) acts on all of them. On a phone, *Select more…* in the menu
+    starts selecting.
+  - Keyboard: arrows move, Enter opens, **F2** renames in place, Shift+F10 or the
+    menu key opens the menu, Ctrl+A selects all, Delete forgets.
+  - A blocked device can still open this dashboard (so you can't lock yourself
+    out); the device you're using is labelled *this device*.
 - **Device page:** time and data per service (today and last 7 days), live
   connections, lookups, bypass attempts.
 - **Activity:** every connection (device, site, destination, duration, ↓/↑
@@ -634,7 +645,7 @@ never included.
 ## Tests
 
 ```bash
-pytest -q                               # 207 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
+pytest -q                               # 211 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 sudo python3 tests/e2e/bench.py         # Linux only: speed of a child's vs. an adult's connections
 ```

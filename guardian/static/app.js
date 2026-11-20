@@ -526,54 +526,7 @@ views.health = {
   },
 };
 
-views.devices = {
-  shell: () => `
-    <div class="page-head"><div><h1>Devices</h1><div class="muted">New devices land in <b>${esc(state.defaultGroup)}</b> until you assign them. Only devices in an unfiltered group (e.g. adults) bypass the filter.</div></div></div>
-    <div class="dev-cards show-sm" id="dev-cards"></div>
-    <div class="panel hide-sm"><div class="scroll" id="dev-table"></div></div>`,
-  async refresh() {
-    const { devices } = await api("/api/devices");
-    const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("#dev-cards");
-    if (!focused) $("#dev-cards").innerHTML = devices.length ? devices.map(x => `
-      <div class="dev-card ${x.online ? "" : "offline"}">
-        <div class="dev-card-head">
-          <span class="status-dot ${x.online ? "on" : ""}" title="${x.online ? "online" : "offline"}"></span>
-          ${deviceLink(x.device_id, x.label)}
-          ${x.paused ? `<span class="badge warn" title="${esc(x.paused_reason)}">paused</span>` : ""}
-          ${x.suspect ? `<span class="badge bad">identity check</span>` : ""}
-          ${!x.group_set ? `<span class="badge info">new</span>` : ""}
-          ${x.alerts ? `<span class="badge bad" title="bypass attempts today">${x.alerts} ⚠</span>` : ""}
-        </div>
-        <div class="dev-card-stats small muted">
-          <span><b>${fmtMins(x.minutes_today)}</b> online</span><span><b>${fmtBytes(x.bytes_down + x.bytes_up)}</b></span>
-          <span><b>${x.blocked}</b> blocked</span><span>${x.online ? "online now" : "seen " + ago(x.last_seen)}</span>
-        </div>
-        <div class="dev-card-actions">
-          ${groupSelect(x)}
-          ${x.paused ? `<button data-pause="${esc(x.device_id)}" data-min="0">Resume</button>`
-            : `<button data-pause="${esc(x.device_id)}" data-min="60">Pause 1h</button>`}
-        </div>
-      </div>`).join("") : `<div class="empty">No devices yet.</div>`;
-    $("#dev-table").innerHTML = devices.length ? `<table><thead><tr>
-      <th>Device</th><th>Group</th><th>Address</th><th class="right">Online today</th><th class="right">↓ / ↑</th>
-      <th class="right">Lookups</th><th class="right">Blocked</th><th class="right">Alerts</th><th>Last seen</th><th></th></tr></thead><tbody>
-      ${devices.map(x => `<tr>
-        <td><span class="status-dot ${x.online ? "on" : ""}"></span>${deviceLink(x.device_id, x.label)}
-          ${x.paused ? `<span class="badge warn" title="${esc(x.paused_reason)}">paused</span>` : ""}
-          ${x.suspect ? `<span class="badge bad" title="Its identity looks copied - filtered until you confirm">identity check</span>` : ""}
-          ${!x.group_set ? `<span class="badge info" title="Not assigned yet - using the default group">new</span>` : ""}</td>
-        <td>${groupSelect(x)}</td>
-        <td class="mono small">${esc(x.ip || "")}<div class="faint">${esc(x.mac || "")}</div></td>
-        <td class="right">${fmtMins(x.minutes_today)}</td>
-        <td class="right nowrap">${fmtBytes(x.bytes_down)} / ${fmtBytes(x.bytes_up)}</td>
-        <td class="right">${x.queries}</td><td class="right">${x.blocked}</td>
-        <td class="right">${x.alerts ? `<span class="badge bad">${x.alerts}</span>` : "0"}</td>
-        <td class="muted small nowrap">${ago(x.last_seen)}</td>
-        <td class="nowrap">${x.paused ? `<button class="small" data-pause="${esc(x.device_id)}" data-min="0">Resume</button>`
-          : `<button class="small" data-pause="${esc(x.device_id)}" data-min="60">Pause 1h</button>`}</td>
-      </tr>`).join("")}</tbody></table>` : `<div class="empty">No devices yet.</div>`;
-  },
-};
+// views.devices lives in devices.js (the desktop-style device table)
 
 views.device = {
   shell: () => `

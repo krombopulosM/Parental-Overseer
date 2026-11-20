@@ -7,6 +7,7 @@ import threading
 import time
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+FOREVER = 32503680000.0        # "block until I unblock it": a pause that never runs out (year 3000)
 
 
 def _hm(s: str) -> int:
@@ -48,7 +49,8 @@ class Scheduler:
             self._paused = paused
 
     def pause(self, device_id: str, minutes: float):
-        until = time.time() + minutes * 60 if minutes > 0 else 0
+        """minutes > 0: pause that long; 0: resume; < 0: block until resumed."""
+        until = FOREVER if minutes < 0 else time.time() + minutes * 60 if minutes > 0 else 0
         self.db.set_paused_until(device_id, until)
         self.reload()
         return until
@@ -58,8 +60,11 @@ class Scheduler:
         with self._lock:
             until = self._paused.get(device_id, 0)
             scheds = list(self._schedules)
+        if until >= FOREVER:
+            return True, "blocked until you unblock it"
         if until > now:
-            return True, "paused until " + time.strftime("%H:%M", time.localtime(until))
+            fmt = "%H:%M" if until - now < 20 * 3600 else "%a %H:%M"
+            return True, "paused until " + time.strftime(fmt, time.localtime(until))
         when = dt.datetime.fromtimestamp(now)
         for s in scheds:
             if not s.get("enabled", 1):
