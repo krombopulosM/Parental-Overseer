@@ -43,6 +43,22 @@ VPN_PORTS = {1194: "OpenVPN", 1195: "OpenVPN", 1196: "OpenVPN", 1197: "OpenVPN",
 WEB_PORTS = (80, 443)
 
 
+_PRIV_NETS = None
+
+
+def _is_private(ip: str) -> bool:
+    global _PRIV_NETS
+    import ipaddress
+    if _PRIV_NETS is None:
+        _PRIV_NETS = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                                                          "169.254.0.0/16", "100.64.0.0/10", "127.0.0.0/8")]
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return a.is_multicast or ip == "255.255.255.255" or any(a in n for n in _PRIV_NETS)
+
+
 def port_protection(label: str) -> str:
     """Which protection a well-known port's label belongs to."""
     if label.startswith("Tor"):
@@ -62,6 +78,9 @@ class Verdict:
 
 
 ALLOW = Verdict(ACCEPT)
+# Fully checked and allowed: the firewall stops sending this connection to us
+# (on the Pi it's marked and released after typically 2-3 packets instead of 10).
+DONE = Verdict(ACCEPT, "inspected: allowed", "done")
 
 
 class FlowLabels:
@@ -148,6 +167,11 @@ class Inspector:
         # Set by an update hand-over: until then, connections this process didn't
         # see start (and lookups the previous process answered) are handled quietly.
         self.handover_until = 0.0
+        # Watch-only (monitor mode): verdicts are reported, never enforced.
+        self.dry_run = cfg.get("mode") != "gateway"
+        # In watch-only mode most devices don't use our DNS, so "connected to an
+        # address it never looked up" only applies to those that do (set by the app).
+        self.dns_users = None
 
     def _p(self, ctx, key):
         return prot(self.cfg, ctx.g, key)
@@ -161,7 +185,7 @@ class Inspector:
         self.stats["packets"] += 1
         ctx = self.policy.context(pkt.src, mac)
         if not ctx.filtered:
-            return ALLOW
+            return DONE
         self._since_gc += 1
         if self._since_gc > 2000:
             self._gc(now)
@@ -173,7 +197,7 @@ class Inspector:
             return self._gateway_probe(ctx, pkt, now)
         if pkt.dst in self.allow_ips:
             self.labels.set(key, reason="destination marked as fine")
-            return ALLOW
+            return DONE
         if pkt.syn_only and self._p(ctx, "network_attacks"):
             self._track_ttl(ctx, pkt, now)
 
@@ -211,7 +235,8 @@ class Inspector:
         self.labels.set(key, verdict="blocked", reason=detail, kind=kind)
         if alert and self.alerts:
             self.alerts.emit(kind, device_id=ctx.device_id, client_ip=ctx.ip, dst=pkt.dst,
-                             domain=domain, detail=detail, severity=severity, base=base, ref=ref)
+                             domain=domain, detail=detail, severity=severity, base=base, ref=ref,
+                             action="would block (watch only)" if self.dry_run else "blocked")
         return v
 
     def _check_destination(self, ctx, pkt, key) -> Verdict | None:
@@ -237,6 +262,8 @@ class Inspector:
 
     def _consistency_mode(self, ctx, dst) -> str:
         mode = self._p(ctx, "direct_ip")
+        if self.dry_run and self.dns_users is not None and not self.dns_users(ctx.ip):
+            return "off"
         if mode != "off" and dst in self.lists.exempt:
             return "off"
         return mode
@@ -321,15 +348,15 @@ class Inspector:
                                flow=fl)
         names = self.dnscache.resolved_by(ctx.ip, pkt.dst) or set()
         if self.protocol_exempt and any(registrable_domain(n) in self.protocol_exempt for n in names):
-            fl.verdict = ALLOW                     # e.g. WhatsApp's own protocol on 443
+            fl.verdict = DONE                     # e.g. WhatsApp's own protocol on 443
             self.labels.set(key, domain=sorted(names)[0], domain_src="dns")
-            return ALLOW
+            return DONE
         label = identify_tcp_stream(buf)
         is_vpn = any(w in label for w in ("WireGuard", "OpenVPN"))
         if not (self._p(ctx, "disguised_tunnels") or (is_vpn and self._p(ctx, "vpn"))
                 or ("SOCKS" in label and self._p(ctx, "proxies"))):
-            fl.verdict = ALLOW
-            return ALLOW
+            fl.verdict = DONE
+            return DONE
         base = 95 if is_vpn or "SOCKS" in label else (60 if label == "unrecognised protocol" else None)
         v = self._block(ctx, pkt, key, "protocol_violation",
                         f"Port {pkt.dport} traffic that isn't {expected}: {label}", flow=fl, base=base)
@@ -377,9 +404,9 @@ class Inspector:
                                                  client_ip=ctx.ip, dst=pkt.dst, domain=name,
                                                  detail=detail, action="allowed (log mode)",
                                                  severity="low")
-        fl.verdict = ALLOW
+        fl.verdict = DONE
         self.stats["allowed_web"] += 1
-        return ALLOW
+        return DONE
 
     def _decide_tls(self, ctx, pkt, key, fl, ch) -> Verdict:
         self.labels.set(key, domain=ch.sni, domain_src="sni", ja4=ch.ja4)
@@ -392,8 +419,8 @@ class Inspector:
                                    f"TLS to {pkt.dst} without a site name"
                                    + (f" (used IP {ch.sni})" if ch.sni else "")
                                    + " - typical of VPN/proxy clients", flow=fl, ref=ch.ja4)
-            fl.verdict = ALLOW
-            return ALLOW
+            fl.verdict = DONE
+            return DONE
         if self._p(ctx, "tor") and looks_like_tor_sni(ch.sni) and not self.dnscache.names_for_ip(pkt.dst):
             if rep is not None:
                 rep.learn_bad(ch.ja4, "Tor", "tor_sni")
@@ -406,7 +433,7 @@ class Inspector:
                                f"Encrypted Client Hello via {ch.sni} hides which site is being "
                                f"visited", domain=ch.sni, flow=fl)
         v = self._name_checks(ctx, pkt, key, fl, ch.sni, "TLS server name")
-        if v is not ALLOW or rep is None:
+        if v.action != ACCEPT or rep is None:
             return v
         known, _ = rep.known(ch.sni, ctx.device_id)
         if known:
@@ -437,8 +464,8 @@ class Inspector:
             if self._p(ctx, "hidden_names") and pkt.dst not in self.lists.exempt:
                 return self._block(ctx, pkt, key, "no_sni",
                                    f"HTTP request to {pkt.dst} without a site name", flow=fl)
-            fl.verdict = ALLOW
-            return ALLOW
+            fl.verdict = DONE
+            return DONE
         return self._name_checks(ctx, pkt, key, fl, req.host, "HTTP Host")
 
     # ------------------------------------------------------------ UDP (groups that allow it)
@@ -514,7 +541,7 @@ class Inspector:
         few packets of each connection here)."""
         if pkt.is_udp:
             v = self._udp(ctx, pkt, key, now)
-            if v is not ALLOW:
+            if v.action != ACCEPT:
                 return v
         elif self._p(ctx, "torrents") and pkt.payload and is_bittorrent_handshake(pkt.payload):
             return self._block(ctx, pkt, key, "torrent",
@@ -597,28 +624,16 @@ class Inspector:
 
     # ------------------------------------------------------------ monitor mode (passive)
     def observe(self, raw: bytes, now: float | None = None):
-        """Passive torrent detection for monitor mode: report, never block."""
+        """Watch-only mode (monitor mode, e.g. on a PC): run every check on the first
+        packets of each outgoing connection exactly as the gateway would, but only
+        report - alerts say "would block". A VPN shows up within a second of
+        connecting, instead of waiting for the behaviour detector."""
         pkt = parse_ip(raw)
         if pkt is None or not (pkt.is_tcp or pkt.is_udp) or not self.alerts:
             return
-        now = now or time.time()
-        ctx = self.policy.context(pkt.src)
-        if ctx.filtered and not self._p(ctx, "torrents"):
-            return
-        sig = None
-        if pkt.is_udp:
-            sig = classify_torrent_udp(pkt.payload)
-        elif pkt.payload and is_bittorrent_handshake(pkt.payload):
-            sig = "BitTorrent peer connection"
-        elif pkt.payload and pkt.dport == 80:
-            req = parse_http_request(pkt.payload)
-            if req not in (None, NEED_MORE) and is_torrent_http(req.target):
-                sig = "BitTorrent tracker announce"
-        if sig:
-            self.alerts.emit("torrent", device_id=ctx.device_id, client_ip=ctx.ip, dst=pkt.dst,
-                             detail=f"{sig} to {pkt.dst}:{pkt.dport}", action="seen (monitor mode)")
-        if (pkt.is_udp or pkt.syn_only) and pkt.dport > 1024 and pkt.dport not in VPN_PORTS:
-            self._track_fanout(ctx, pkt, now, self.fanout_peers, "Seen passively (monitor mode).")
+        if not _is_private(pkt.src) or _is_private(pkt.dst):
+            return                                     # only home device -> internet
+        self.inspect(raw, None, now)
 
     # ------------------------------------------------------------ housekeeping
     def _gc(self, now):

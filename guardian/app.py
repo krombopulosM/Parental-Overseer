@@ -55,6 +55,8 @@ class Guardian:
         self.lists.resolve_fn = lambda name: self.resolver.lookup(name, "both")
         self.labels = FlowLabels()
         self.inspector = Inspector(cfg, self.policy, self.lists, self.dnscache, self.alerts, self.labels)
+        if self.mode != "gateway":                      # watch-only: direct-address check for our DNS users only
+            self.inspector.dns_users = lambda ip: self.stats.count(ip, 600) > 0
 
         self.gateway = self.nfq = None
         if self.mode == "gateway" and self.linux:

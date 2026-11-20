@@ -277,6 +277,13 @@ def test_nft_render_both_backends():
     gw.backend = "xt"
     t2 = gw.render()
     assert "queue" not in t2 and "meta mark set 0x20 accept" in t2
+    # finished connections are released after the verdict, not after 10 packets
+    assert "meta mark 0x40 ct mark set 0x40" in t2 and t2.count("ct mark 0x40 accept") == 2
+    assert "flowtable ft" not in t2 and "flow add" not in t2       # no flowtable unless the kernel has it
+    gw.flowtable_devs = ["eth0", "eth1"]
+    t3 = gw.render()
+    assert 'flowtable ft { hook ingress priority 0; devices = { "eth0", "eth1" }; counter; }' in t3
+    assert "ct mark 0x40 flow add @ft" in t3 and "meta mark 0x1 oifname \"eth0\" flow add @ft" in t3
 
 
 # ------------------------------------------------------------------ replay tool

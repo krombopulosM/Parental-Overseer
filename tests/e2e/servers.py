@@ -68,6 +68,11 @@ class TLSHandler(socketserver.BaseRequestHandler):
                 while time.time() < end:
                     conn.sendall(b"v" * 1_000_000)
                     time.sleep(2.5)
+            elif data.startswith(b"FLOOD"):            # as fast as possible (speed benchmark)
+                end = time.time() + float(data[5:].strip() or 8)
+                chunk = b"f" * 262144
+                while time.time() < end:
+                    conn.sendall(chunk)
             elif data.startswith(b"BULK"):
                 end = time.time() + 60
                 chunk = b"x" * 65536

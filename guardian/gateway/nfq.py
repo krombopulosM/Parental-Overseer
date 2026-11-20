@@ -8,7 +8,7 @@ import time
 import traceback
 
 from ..inspector import ACCEPT, RESET
-from .nft import M_RESET
+from .nft import M_DONE, M_RESET
 
 
 def _mac(hw) -> str | None:
@@ -38,6 +38,8 @@ class NfqRunner:
             return
         self.handled += 1
         if v.action == ACCEPT:
+            if v.kind == "done":
+                pkt.set_mark(M_DONE)            # checked: the firewall stops queueing this connection
             pkt.accept()
         elif v.action == RESET:
             pkt.set_mark(M_RESET)

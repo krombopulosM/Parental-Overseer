@@ -100,7 +100,7 @@ class SnifferBackend:
             if up:
                 e.up += p.length
                 e.pu += 1
-                observe = self.observer is not None and e.pu <= 3
+                observe = self.observer is not None and e.pu <= 6
             else:
                 observe = False
                 e.down += p.length

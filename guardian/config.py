@@ -74,10 +74,10 @@ DEFAULTS: dict = {
         "repin_minutes": 10,
     },
     "detector": {
-        "enabled": True, "interval": 30, "min_duration": 300, "min_bytes": 10_000_000,
-        "window": 300, "dns_silence_max_queries": 3, "silence_min_bytes": 5_000_000,
+        "enabled": True, "interval": 5, "min_duration": 300, "min_bytes": 10_000_000,
+        "window": 300, "dns_silence_max_queries": 3, "silence_min_bytes": 3_000_000,
         "threshold": 70, "block_hours": 24, "learning_days": 3, "exempt_services": [],
-        "unknown_min_duration": 60, "unknown_min_bytes": 2_000_000,
+        "unknown_min_duration": 20, "unknown_min_bytes": 1_000_000,
     },
     "flows": {
         "poll_interval": 2, "active_minute_bytes": 10_000, "sniffer_interface": None,

@@ -240,14 +240,14 @@ tamper:
 # ---------------------------------------------------------------- VPN-behaviour detector
 detector:
   enabled: true
-  interval: 30
-  min_duration: 300            # a connection must be this long-lived (s) ...
+  interval: 5                  # how often connections are scored (s)
+  min_duration: 300            # a connection to a KNOWN site must be this long-lived (s) ...
   min_bytes: 10000000          # ... and carry this much data to be scored
-  unknown_min_duration: 60     # much sooner when the destination is unknown
-  unknown_min_bytes: 2000000
+  unknown_min_duration: 20     # far sooner when the destination is unknown: tunnels are caught in ~20 s
+  unknown_min_bytes: 1000000
   window: 300
   dns_silence_max_queries: 3   # a device tunnelling its DNS stops asking us
-  silence_min_bytes: 5000000
+  silence_min_bytes: 3000000
   threshold: 70
   block_hours: 24
   learning_days: 3             # "never seen before" signal only after this

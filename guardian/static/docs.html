@@ -337,7 +337,7 @@ knowing the server at all - they target how these tools <i>work</i>:</p>
 <tr><td><b>Tor's handshake shape</b></td><td>Tor's connections use made-up site names (www.<i>random letters</i>.com) that were never looked up - recognised and blocked even where the DNS check only reports.</td></tr>
 <tr><td><b>Learned software fingerprints</b></td><td>Every app opens secure connections with its own characteristic "hello" (its TLS fingerprint). When a tunnel is caught - by its behaviour, a hidden site name, a disguise, or your "Confirmed" click - its fingerprint is remembered, and that software is then blocked on <b>any</b> server, including ones that appear later. Fingerprints that browsers and ordinary apps use for normal sites are never learned. Learned fingerprints are listed on Rules &amp; schedules.</td></tr>
 <tr><td><b>Unknown destinations</b></td><td>The one thing a tunnel with a genuine domain and genuine encryption (a VPN routed through a CDN, a Tor "WebTunnel" bridge, a VPN on a rented server) can't hide is that it carries a lot of traffic to <i>somewhere</i>. For children, heavy or long-running traffic to a site that isn't popular, a known service, used by an adult in the house, or approved by you is cut and held on the Reviews page. Hosting platforms where anyone can run a server (Cloudflare Workers, Amazon EC2, Heroku…) never count as known.</td></tr>
-<tr><td><b>Behaviour</b></td><td>A device whose DNS goes quiet while one long connection carries all its traffic is tunnelling. On unknown destinations this is caught within about a minute.</td></tr>
+<tr><td><b>Behaviour</b></td><td>A device whose DNS goes quiet while one long connection carries all its traffic is tunnelling. On unknown destinations this is caught in about 20 seconds.</td></tr>
 <tr><td><b>Escalation</b></td><td>A device that tries technique after technique within ten minutes is running a bypass tool: the alert names it (e.g. "Tor Browser") and the device is paused.</td></tr>
 </tbody></table>
 <h3>Example: Tor Browser brought in on a USB stick</h3>
@@ -572,7 +572,7 @@ running, the setup checklist, settings, update history, firewall rules, database
   <dt>My own device shows "identity check".</dt><dd>Its network fingerprint changed (an OS update or new adapter). Click <b>It's me</b> on the device page.</dd>
   <dt>I'm locked out of the dashboard.</dt><dd>On the Pi: <code>sudo /opt/parental-gateway/.venv/bin/python run.py --set-password</code>. Only devices in the adults group can reach the dashboard once at least one is assigned.</dd>
   <dt>The gateway stopped - is the internet down for everyone?</dt><dd>Briefly, yes. The firewall stays in place, so adults' open connections carry on and children's new web connections are refused (it fails closed). But the gateway also answers everyone's DNS lookups, so <i>new</i> lookups fail for every device until the service is back - systemd restarts it automatically within a few seconds.</dd>
-  <dt>Will this slow the internet?</dt><dd>Only the opening packets of each connection are inspected; everything after that is forwarded by the kernel at full speed.</dd>
+  <dt>Will this slow the internet?</dt><dd>Not noticeably. Only the first two or three packets of each connection are inspected; after that the connection skips the filter and, on a Pi, is forwarded by the kernel's fast path. DNS answers are cached, so most lookups are faster than without it. In tests a child's downloads ran at the same speed as an adult's, and opening a connection took under a millisecond longer.</dd>
 </dl>
 </section>
 

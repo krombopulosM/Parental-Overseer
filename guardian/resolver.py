@@ -96,6 +96,51 @@ class DnsTunnelDetector:
         return fire
 
 
+class AnswerCache:
+    """Upstream answers, kept for their TTL: a repeat lookup is answered from the
+    gateway in well under a millisecond instead of a round trip to the internet.
+    Only the upstream data is cached - filtering decisions are still made per
+    device on every lookup. Names in use are refreshed shortly before they expire."""
+
+    def __init__(self, size: int = 20000, max_ttl: int = 3600, neg_ttl: int = 60):
+        self.size, self.max_ttl, self.neg_ttl = size, max_ttl, neg_ttl
+        self._d: collections.OrderedDict = collections.OrderedDict()
+        self._lock = threading.Lock()
+        self.hits = self.misses = 0
+
+    def get(self, key):
+        now = time.time()
+        with self._lock:
+            e = self._d.get(key)
+            if e is None or e[0] <= now:
+                if e is not None:
+                    del self._d[key]
+                self.misses += 1
+                return None
+            self._d.move_to_end(key)
+            self.hits += 1
+            return e
+
+    def put(self, key, rec):
+        if rec.header.rcode not in (RCODE.NOERROR, RCODE.NXDOMAIN) or rec.header.tc:
+            return                                       # never cache failures
+        if rec.rr:
+            ttl = min(r.ttl for r in rec.rr)
+            ttl = max(5, min(self.max_ttl, ttl))
+        else:
+            soa = [a for a in rec.auth if QTYPE[a.rtype] == "SOA"]
+            ttl = max(5, min(self.neg_ttl, soa[0].rdata.times[-1] if soa else self.neg_ttl))
+        now = time.time()
+        with self._lock:
+            self._d[key] = (now + ttl, now, ttl, rec.header.rcode, list(rec.rr), list(rec.auth))
+            self._d.move_to_end(key)
+            while len(self._d) > self.size:
+                self._d.popitem(last=False)
+
+    def __len__(self):
+        return len(self._d)
+
+
 class GuardianResolver(BaseResolver):
     def __init__(self, cfg, policy, lists, dnscache, db, alerts, scheduler, stats, tunnel):
         self.cfg = cfg
@@ -116,6 +161,8 @@ class GuardianResolver(BaseResolver):
         self.alerts, self.scheduler, self.stats, self.tunnel = alerts, scheduler, stats, tunnel
         self._seen_domains: set[str] = set()
         self.counters = collections.Counter()
+        self.cache = AnswerCache(int(d.get("cache_size", 20000))) if d.get("cache", True) else None
+        self._refreshing: set = set()
         self.adult = None                     # AdultGuard, wired by the app
         self.reputation = None                # Reputation: adults' sites become "familiar"
 
@@ -142,6 +189,44 @@ class GuardianResolver(BaseResolver):
         return r
 
     def forward(self, request, upstreams=None):
+        if self.cache is None:
+            return self._ask(request, upstreams)
+        ups = tuple(upstreams or self.upstreams)
+        key = (str(request.q.qname).lower(), request.q.qtype, request.q.qclass, ups)
+        e = self.cache.get(key)
+        if e is not None:
+            expires, stored, ttl, rcode, rrs, auth = e
+            left = expires - time.time()
+            if left < ttl * 0.1 and key not in self._refreshing:   # keep names in use fresh
+                self._refreshing.add(key)
+                threading.Thread(target=self._refresh, args=(key, request, upstreams), daemon=True).start()
+            self.counters["cache_hits"] += 1
+            return self._from_cache(request, rcode, rrs, auth, int(max(1, left)))
+        rec = self._ask(request, upstreams)
+        if rec is not None:
+            self.cache.put(key, rec)
+        return rec
+
+    def _refresh(self, key, request, upstreams):
+        try:
+            rec = self._ask(DNSRecord.question(str(request.q.qname), QTYPE[request.q.qtype]), upstreams)
+            if rec is not None:
+                self.cache.put(key, rec)
+        finally:
+            self._refreshing.discard(key)
+
+    @staticmethod
+    def _from_cache(request, rcode, rrs, auth, left):
+        r = request.reply()
+        r.header.rcode = rcode
+        r.header.aa = 0
+        for rr in rrs:
+            r.add_answer(RR(rr.rname, rr.rtype, rr.rclass, ttl=min(rr.ttl, left), rdata=rr.rdata))
+        for rr in auth:
+            r.add_auth(RR(rr.rname, rr.rtype, rr.rclass, ttl=min(rr.ttl, left), rdata=rr.rdata))
+        return r
+
+    def _ask(self, request, upstreams=None):
         for up in upstreams or self.upstreams:
             try:
                 data = request.send(up, self.up_port, tcp=self.up_tcp, timeout=3)

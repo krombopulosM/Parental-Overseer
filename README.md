@@ -130,7 +130,7 @@ on knowing the server:
 - **Tor's handshake shape:** made-up `www.<random>.com` names that were never looked up.
 - **Learned fingerprints:** once any tunnel is caught (behaviour, hidden site name, disguise, or your "Confirmed"), its software's TLS (JA4) fingerprint is blocked on *every* server. Fingerprints browsers use for normal sites are never learned. They're listed on Rules & schedules, with a Forget button.
 - **Unknown destinations:** heavy traffic (15 MB, or 10 min with 3 MB) to a site that isn't popular (Tranco / Umbrella top lists), a known service, used by an adult in the house, or approved is cut and held for review. Hosting platforms (Workers, EC2, Heroku…) never count as known. This is what catches tunnels with real domains and real encryption (CDN-routed VLESS/V2Ray, Tor WebTunnel bridges, self-hosted VPNs).
-- **Faster behaviour detection** on unknown destinations: about 1 minute instead of 5.
+- **Fast behaviour detection:** a tunnel to an unknown destination is noticed in about 20 seconds (checked every 5 s; a slow trickle of 60 KB/s takes under a minute). In watch-only mode every packet-level check above also runs, so VPN protocols, VPN servers and disguised tunnels are reported on their first packet.
 - **Escalation:** 3+ different techniques from one device in 10 minutes names the tool ("Tor Browser", "a VPN or proxy app") and pauses the device for 15 minutes.
 
 ## Torrents
@@ -275,6 +275,41 @@ when it might be innocent. The score combines:
   "This is fine" exempts a destination.
 
 ---
+
+## Speed
+
+Filtering costs almost nothing once a connection is open:
+
+- **Only the opening packets are looked at.** As soon as the inspector has seen
+  the site name (usually the 2nd or 3rd packet) it marks the connection
+  "finished", and every later packet skips the inspector entirely.
+- **Kernel fast path on the Pi.** Where the kernel supports flowtables
+  (Raspberry Pi OS does; it's detected automatically, see *Health*),
+  finished connections and all of an adult's connections bypass the firewall
+  rules and are forwarded straight from network card to network card.
+  `enforcement.fastpath: off` turns it off.
+- **All CPU cores share the work** (receive packet steering), instead of one
+  core taking every network interrupt.
+- **DNS answers are cached** (respecting their lifetime, refreshed shortly
+  before they expire), so repeat lookups are answered in under a millisecond
+  without asking the internet. Filtering is still applied to every lookup.
+
+Measured on the end-to-end test network (`sudo python3 tests/e2e/bench.py`):
+
+| | before | now |
+|---|---|---|
+| DNS lookup (median) | 1.4 ms | 0.8 ms |
+| Packets the inspector handles per test run | 595 | 260 |
+| Gateway CPU, child's device | 0.66 s | 0.47 s |
+| Opening a secure connection, child vs. adult | +0.7 ms | +0.75 ms |
+| Download speed, child vs. adult | same | same |
+
+On a real Pi the limit is the hardware rather than the filter (these numbers
+come from the test network, not a Pi): a Pi 4 or 5 with a good USB 3 Ethernet
+adapter can route several hundred Mbit/s, up to around 1 Gbit/s with the fast
+path. The Pi's built-in Wi-Fi is much slower than a router's, which is why the
+router (in access-point mode) should keep doing the Wi-Fi. On Windows, data the PC downloads is unaffected; uploads from a
+filtered PC still pass through the filter one packet at a time.
 
 ## Run it on your PC
 
@@ -599,8 +634,9 @@ never included.
 ## Tests
 
 ```bash
-pytest -q                               # 199 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
+pytest -q                               # 207 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
+sudo python3 tests/e2e/bench.py         # Linux only: speed of a child's vs. an adult's connections
 ```
 
 The end-to-end test builds a miniature home network out of Linux network

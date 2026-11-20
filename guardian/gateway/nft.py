@@ -21,6 +21,7 @@ Unknown MACs are filtered by default: only devices you mark as adults escape.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 import time
@@ -29,6 +30,7 @@ from . import system
 
 TABLE = "guardian"
 M_TRUSTED, M_FILTERED, M_PAUSED, M_INSPECT, M_RESET = 0x1, 0x2, 0x3, 0x20, 0xDEAD
+M_DONE = 0x40          # the inspector has finished with this connection (allowed)
 PRIVATE_V4 = "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16"
 
 
@@ -55,6 +57,9 @@ class NftGateway:
         self.fail_open = bool(enf.get("fail_open", False))
         self.inspect_pkts = int(enf.get("inspect_packets", 10))
         self.backend = None
+        self.fastpath = enf.get("fastpath", "auto")          # auto | off
+        self.flowtable_devs: list[str] | None = None
+        self.fastpath_status = "not checked"
         self._sets: dict[str, frozenset] = {}
         self._admin_open = None
         self._lists_version = -1
@@ -91,9 +96,14 @@ class NftGateway:
         trusted_if = f"iifname {_q(self.trusted_ifs)} " if self.trusted_ifs else ""
         v6_drop = "" if self.ipv6 else "        meta nfproto ipv6 drop\n"
         wan_ssh = f'        iifname "{self.wan}" tcp dport 22 accept\n' if self.allow_wan_ssh else ""
+        ft = (f"    flowtable ft {{ hook ingress priority 0; devices = {_q(self.flowtable_devs)}; counter; }}\n"
+              if self.flowtable_devs else "")
+        offload = (f"        ct mark {M_DONE:#x} flow add @ft\n"
+                   f"        iifname {lan} meta mark {M_TRUSTED:#x} oifname \"{self.wan}\" flow add @ft\n"
+                   if self.flowtable_devs else "")
         return f"""
 table inet {TABLE} {{
-    set trusted_macs {{ type ether_addr; }}
+{ft}    set trusted_macs {{ type ether_addr; }}
     set paused_macs  {{ type ether_addr; }}
     set udp_ok_macs  {{ type ether_addr; }}
     set open_macs    {{ type ether_addr; }}
@@ -179,14 +189,24 @@ table inet {TABLE} {{
     }}
 
     chain web {{
+        ct mark {M_DONE:#x} accept
         ct original packets <= {self.inspect_pkts} {q}
         accept
     }}
 
     chain udp_inspect {{
+        ct mark {M_DONE:#x} accept
         ct original packets <= 3 {q}
         accept
     }}
+
+    # After the inspector's verdict: remember "finished" on the connection, so its
+    # next packets go straight through; with a flowtable, hand finished and
+    # adults' connections to the kernel's fast path (no per-packet rule checks).
+    chain release {{
+        type filter hook forward priority filter + 10; policy accept;
+        meta mark {M_DONE:#x} ct mark set {M_DONE:#x}
+{offload}    }}
 }}
 """
 
@@ -239,6 +259,8 @@ table inet {TABLE} {{
         if not self.ipv6:
             system.sysctl("net/ipv6/conf/all/forwarding", "0")
         self.backend = self.detect_backend()
+        self._probe_fastpath()
+        self._spread_load()
         devices = devices or {}
         want = {f"{k}_macs": frozenset(devices.get(k) or ()) for k in ("trusted", "paused", "udp_ok", "admin", "open")}
         script = f"table inet {TABLE}\ndelete table inet {TABLE}\n" + self.render()
@@ -268,8 +290,62 @@ table inet {TABLE} {{
         # Only start routing once the rules are in place: the Pi boots with
         # forwarding off, so there is never an unfiltered window at startup.
         system.sysctl("net/ipv4/ip_forward", "1")
-        self.status = {"applied": True, "error": None, "backend": self.backend,
+        self.status = {"applied": True, "error": None, "backend": self.backend, "fastpath": self.fastpath_status,
+                       "rps": len(getattr(self, "rps", []) or []),
                        "applied_at": time.time()}
+
+    def _probe_fastpath(self):
+        """Use the kernel's flowtable fast path if this kernel has it (Raspberry Pi OS does)."""
+        if str(self.fastpath).lower() in ("off", "false", "0"):
+            self.flowtable_devs, self.fastpath_status = None, "off (setting)"
+            return
+        devs = [self.wan] + [d for d in self.lan if d]
+        probe = (f"table inet guardian_ftprobe {{\n flowtable ft {{ hook ingress priority 0; devices = {_q(devs)}; "
+                 f"counter; }}\n}}\n")
+        r = system.nft(probe, check=False)
+        system.nft("delete table inet guardian_ftprobe\n", check=False)
+        if getattr(r, "returncode", 1) == 0:
+            self.flowtable_devs, self.fastpath_status = devs, "flowtable"
+        else:
+            err = (getattr(r, "stderr", "") or "").strip().splitlines()
+            self.flowtable_devs = None
+            self.fastpath_status = "off (this kernel has no flowtables)" if any(
+                "No such file" in e or "not supported" in e.lower() for e in err) else \
+                f"off ({err[-1][:80] if err else 'unavailable'})"
+
+    def _spread_load(self):
+        """Receive packet steering: let all CPU cores share the network work (a Pi's
+        USB/Ethernet interrupts otherwise land on one core)."""
+        try:
+            ncpu = os.cpu_count() or 1
+        except Exception:
+            ncpu = 1
+        if ncpu < 2:
+            return
+        mask = format((1 << ncpu) - 1, "x")
+        done = []
+        for dev in [self.wan] + list(self.lan):
+            base = f"/sys/class/net/{dev}/queues"
+            try:
+                queues = [q for q in os.listdir(base) if q.startswith("rx-")]
+            except OSError:
+                continue
+            for q in queues:
+                try:
+                    with open(f"{base}/{q}/rps_cpus", "w") as fh:
+                        fh.write(mask)
+                    with open(f"{base}/{q}/rps_flow_cnt", "w") as fh:
+                        fh.write(str(32768 // max(1, len(queues))))
+                    done.append(f"{dev}/{q}")
+                except OSError:
+                    pass
+        if done:
+            try:
+                with open("/proc/sys/net/core/rps_sock_flow_entries", "w") as fh:
+                    fh.write("32768")
+            except OSError:
+                pass
+        self.rps = done
 
     def teardown(self):
         if not self.cfg["gateway"].get("remove_rules_on_exit"):

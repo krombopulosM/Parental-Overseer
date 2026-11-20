@@ -57,7 +57,7 @@ def test_torrent_peer_fanout(env):
 def test_passive_torrent_observe(env):
     env.insp.observe(udp(KID, VPS, 6881, 6881, DHT_PING))
     a = [x for x in env.alerts.memory if x["kind"] == "torrent"]
-    assert a and a[0]["action"] == "seen (monitor mode)"
+    assert a and a[0]["action"] == "would block (watch only)"
 
 
 # ------------------------------------------------------------------ other inspector defences

@@ -397,7 +397,7 @@ class WindowsGateway:
         v = self.inspector.inspect(raw, mac)
         if v.action == ACCEPT:
             limit = self.inspect_pkts if (p.proto == 6 and p.dport in (80, 443)) else 3
-            if fl.n >= limit:
+            if v.kind == "done" or fl.n >= limit:     # checked (usually after 2-3 packets): fast path
                 fl.passed = True                          # like the Pi: only the first packets are inspected
             h.send(raw, outbound, iface)
         elif v.action == RESET:

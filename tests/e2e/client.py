@@ -671,5 +671,77 @@ def suite_probe_parent():
         check(f"parent during the update: {name} ({v['n']} tries)", v["bad"], 0)
 
 
+# ---------------------------------------------------------------- speed benchmark
+def _bench(ip, sni, name, streams=(1, 4)):
+    import statistics
+    import threading
+
+    def pct(xs, q):
+        xs = sorted(xs)
+        return round(xs[min(len(xs) - 1, int(q * len(xs)))], 2) if xs else None
+    out = {}
+    lat = []
+    for _ in range(300):
+        t = time.perf_counter()
+        r = dns(name)
+        if r[0] == 0:
+            lat.append((time.perf_counter() - t) * 1000)
+    out["dns_ms"] = {"median": pct(lat, .5), "p95": pct(lat, .95), "ok": len(lat)}
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    hs, fb = [], []
+    for _ in range(60):
+        t = time.perf_counter()
+        try:
+            raw = socket.create_connection((ip, 443), timeout=5)
+            s = ctx.wrap_socket(raw, server_hostname=sni)
+            t1 = time.perf_counter()
+            s.sendall(b"GET")
+            s.recv(10)
+            t2 = time.perf_counter()
+            s.close()
+            hs.append((t1 - t) * 1000)
+            fb.append((t2 - t) * 1000)
+        except OSError:
+            pass
+    out["connect_tls_ms"] = {"median": pct(hs, .5), "p95": pct(hs, .95), "ok": len(hs)}
+    out["first_byte_ms"] = {"median": pct(fb, .5), "p95": pct(fb, .95)}
+    for n in streams:
+        got = [0] * n
+
+        def one(i):
+            try:
+                raw = socket.create_connection((ip, 443), timeout=5)
+                s = ctx.wrap_socket(raw, server_hostname=sni)
+                s.sendall(b"FLOOD 6")
+                s.settimeout(5)
+                end = time.time() + 6
+                while time.time() < end:
+                    d = s.recv(1 << 20)
+                    if not d:
+                        break
+                    got[i] += len(d)
+                s.close()
+            except OSError:
+                pass
+        ts = [threading.Thread(target=one, args=(i,)) for i in range(n)]
+        t = time.time()
+        for th in ts:
+            th.start()
+        for th in ts:
+            th.join()
+        out[f"throughput_{n}_MBps"] = round(sum(got) / (time.time() - t) / 1e6, 1)
+    print(json.dumps(out), flush=True)
+
+
+def suite_bench_kid():
+    _bench("198.51.100.10", "site.test", "site.test")
+
+
+def suite_bench_parent():
+    _bench("198.51.100.77", "vps.test", "vps.test")
+
+
 if __name__ == "__main__":
     globals()[f"suite_{sys.argv[1]}"]()
