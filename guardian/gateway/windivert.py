@@ -113,7 +113,18 @@ class DivertHandle:
         flags = pydivert.Flag.DROP if drop else pydivert.Flag.DEFAULT
         self._pd = pydivert
         self.w = pydivert.WinDivert(filt, layer=lay, priority=priority, flags=flags)
-        self.w.open()
+        try:
+            self.w.open()
+        except OSError as e:
+            # WinError 87 means WinDivert didn't accept the filter: say where and why.
+            detail = ""
+            try:
+                ok, pos, msg = pydivert.WinDivert.check_filter(filt, lay)
+                if not ok:
+                    detail = f" - the filter has an error at character {pos} ({msg}): ...{filt[pos:pos + 50]}"
+            except Exception:
+                pass
+            raise OSError(f"{e}{detail}") from e
 
     def recv(self):
         p = self.w.recv()
@@ -200,9 +211,10 @@ class WindowsGateway:
         return self.hotspot_ip in self.local_ips
 
     def _upstream_exclusions(self) -> str:
+        # WinDivert can't negate a bracketed group ("not (a and b)" is a syntax error),
+        # so "not to our upstream DNS over TCP" is spelled out: (port != 53 or addr != u) for each.
         ups = list(self.cfg["dns"].get("upstreams") or []) + list((self.cfg.get("adult") or {}).get("family_dns") or [])
-        parts = [f"(tcp.DstPort == 53 and ip.DstAddr == {u})" for u in ups if _is_v4(u)]
-        return (" and not (" + " or ".join(parts) + ")") if parts else ""
+        return "".join(f" and (tcp.DstPort != 53 or ip.DstAddr != {u})" for u in ups if _is_v4(u))
 
     def filters(self) -> dict[str, tuple[str, str, bool]]:
         """name -> (filter, layer, drop-in-kernel)."""
@@ -213,10 +225,12 @@ class WindowsGateway:
             dns = f"({dns}) or (inbound and ip and udp.DstPort == 53 and ip.DstAddr == {self.hotspot_ip})"
         f["dns"] = (dns, "network", False)
         if self.protect_pc:
-            not_lan = ("ip.DstAddr < 224.0.0.0 and not (ip.DstAddr >= 10.0.0.0 and ip.DstAddr <= 10.255.255.255)"
-                       " and not (ip.DstAddr >= 172.16.0.0 and ip.DstAddr <= 172.31.255.255)"
-                       " and not (ip.DstAddr >= 192.168.0.0 and ip.DstAddr <= 192.168.255.255)"
-                       " and not (ip.DstAddr >= 169.254.0.0 and ip.DstAddr <= 169.254.255.255)")
+            # Public addresses only (no negated groups: WinDivert's filter language has none).
+            not_lan = ("ip.DstAddr < 224.0.0.0"
+                       " and (ip.DstAddr < 10.0.0.0 or ip.DstAddr > 10.255.255.255)"
+                       " and (ip.DstAddr < 172.16.0.0 or ip.DstAddr > 172.31.255.255)"
+                       " and (ip.DstAddr < 192.168.0.0 or ip.DstAddr > 192.168.255.255)"
+                       " and (ip.DstAddr < 169.254.0.0 or ip.DstAddr > 169.254.255.255)")
             f["local"] = (f"outbound and !loopback and ip and {not_lan} and "
                           f"((tcp and (tcp.Syn or tcp.PayloadLength > 0)) or "
                           f"(udp and udp.DstPort != 53 and udp.DstPort != 123 and udp.DstPort != 67))"
@@ -272,7 +286,8 @@ class WindowsGateway:
             except Exception as e:
                 self.status["error"] = f"couldn't open the {name} packet filter: {e}"
                 if name in ("dns", "local"):
-                    raise
+                    raise RuntimeError(self.status["error"]) from e
+                print(f"[windivert] {self.status['error']}")
                 continue
             self.handles[name] = h
             if not drop:

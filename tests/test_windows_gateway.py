@@ -89,7 +89,7 @@ def test_handles_opened_with_the_right_filters(win):
     assert names == ["dns", "forward", "ipv6", "local"]               # hotspot up, PC filtered
     assert win.h("forward").layer == "forward" and "192.168.137.0" in win.h("forward").filt
     assert win.h("ipv6").drop is True                                 # IPv6 dropped in the driver
-    assert "tcp.DstPort == 53 and ip.DstAddr == 192.0.2.53" in win.h("local").filt   # our own upstream queries
+    assert "(tcp.DstPort != 53 or ip.DstAddr != 192.0.2.53)" in win.h("local").filt   # our own upstream queries pass
     assert "udp.DstPort == 53" in win.h("dns").filt and "192.168.137.1" in win.h("dns").filt
 
 
@@ -245,3 +245,29 @@ def test_windows_check_runs_end_to_end_with_a_simulated_driver(tmp_path, monkeyp
     assert report["environment"]["handles"] and all(h.closed for h in opened if h.filt != "false")
     assert code in (0, 1)
     os.environ.pop("GUARDIAN_DATA_DIR", None)
+
+
+def test_filters_use_only_what_windivert_accepts(win):
+    """WinDivert's filter language can negate a single test ("not tcp", "!loopback")
+    but not a bracketed group: "not (a and b)" makes the driver refuse to open
+    (WinError 87). Checked against WinDivert 2.2's own filter compiler."""
+    import re
+    filters = dict(win.gw.filters())
+    filters["ipv6"] = ("outbound and !loopback and ipv6", "network", True)
+    for name, (filt, _layer, _drop) in filters.items():
+        assert not re.search(r"(\bnot|!)\s*\(", filt), f"{name}: negated group in {filt}"
+        assert filt.count("(") == filt.count(")"), name
+    local = filters["local"][0]
+    assert "(ip.DstAddr < 10.0.0.0 or ip.DstAddr > 10.255.255.255)" in local
+    assert "(tcp.DstPort != 53 or ip.DstAddr != 192.0.2.53)" in local          # our own upstream DNS
+
+
+def test_open_failure_names_the_filter(env, monkeypatch):
+    def opener(filt, layer="network", drop=False):
+        raise OSError(87, "The parameter is incorrect")
+    env.cfg["mode"] = "gateway"
+    gw = wd.WindowsGateway(env.cfg, env.lists, None, env.insp, identity=env.policy.identity,
+                           policy=env.policy, opener=opener)
+    monkeypatch.setattr(gw, "_discover", lambda: (setattr(gw, "local_ips", {PC_IP}), setattr(gw, "local_mac", PC_MAC)))
+    with pytest.raises(RuntimeError, match="couldn't open the dns packet filter"):
+        gw.setup()
