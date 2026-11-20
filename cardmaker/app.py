@@ -123,7 +123,7 @@ class App:
         self.file_var = tk.StringVar()
         src = ttk.Frame(f)
         src.grid(row=r, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        ttk.Radiobutton(src, text="Latest version (downloads about 700 MB)", value="latest",
+        ttk.Radiobutton(src, text="Latest version (downloads about 500 MB)", value="latest",
                         variable=self.src_var).pack(side="left")
         ttk.Radiobutton(src, text="A file I downloaded…", value="file", variable=self.src_var,
                         command=self.pick_file).pack(side="left", padx=(12, 0))
