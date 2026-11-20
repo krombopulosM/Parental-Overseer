@@ -29,6 +29,7 @@ POLICIES = ("off", "review_suspicious", "review_all", "block_suspicious")
 
 class DownloadGuard:
     def __init__(self, cfg, db, lists, alerts, kill_flow=None):
+        self.categories_for = None          # (device_id, group) -> blocked categories (set by the app)
         self.cfg, self.db, self.lists, self.alerts = cfg, db, lists, alerts
         self.inline = cfg.get("mode") == "gateway"
         self.kill_flow = kill_flow
@@ -174,7 +175,8 @@ class DownloadGuard:
         service is cut and held for review."""
         if self.adult is None or rec.bytes_down < self.video_min_bytes or rec.duration < 4:
             return None
-        policy = self.adult.unknown_video_policy(group_cfg)
+        cats = self.categories_for(rec.device_id, rec.group) if self.categories_for else None
+        policy = self.adult.unknown_video_policy(group_cfg, cats)
         if policy == "off":
             return None
         from .activity import SERVICE_CATEGORY

@@ -260,6 +260,33 @@ def set_group_protection(cfg: dict, group: str, key: str, value):
     normalize(cfg)
 
 
+def category_catalog(cfg: dict) -> list[dict]:
+    """The site categories a parent can switch per group and per device (VPN, Tor,
+    proxy and encrypted-DNS sites follow their protection switches instead)."""
+    out = []
+    for key in (cfg.get("categories") or {}):
+        if key in BYPASS_CATEGORIES:
+            continue
+        label, desc, _ = CATEGORY_INFO.get(key, (key.replace("_", " ").capitalize(), "", False))
+        out.append({"key": key, "label": label, "description": desc})
+    return out
+
+
+def set_group_categories(cfg: dict, group: str, categories: list):
+    """Which categories a group blocks. Saved to config.local.yaml and applied at once."""
+    if group not in cfg["groups"]:
+        raise ValueError(f"unknown group {group}")
+    known = {c["key"] for c in category_catalog(cfg)}
+    bad = [c for c in categories if c not in known]
+    if bad:
+        raise ValueError(f"unknown category {bad[0]}")
+    keep = [c for c in cfg["groups"][group].get("categories") or [] if c in BYPASS_CATEGORIES]
+    new = [c for c in categories if c in known] + keep
+    save_local(cfg, {"groups": {group: {"categories": new}}})
+    cfg["groups"][group]["categories"] = new          # same dict the policy reads: live at once
+    return new
+
+
 def restart_needed(values: dict, cfg: dict) -> list[str]:
     return [k for k, v in values.items() if k in _PATHS and _PATHS[k][1] and _get(cfg, _PATHS[k][0]) != v]
 

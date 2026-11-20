@@ -31,7 +31,8 @@ LAN = [("pg-kid", "10.50.0.10", "02:00:00:00:00:10"), ("pg-kid2", "10.50.0.11", 
 INET_IPS = ["198.51.100.10", "198.51.100.53", "198.51.100.54", "198.51.100.66", "198.51.100.77",
             "198.51.100.78", "198.51.100.79", "198.51.100.80", "198.51.100.81", "198.51.100.82",
             "198.51.100.83", "198.51.100.84", "198.51.100.85", "198.51.100.86", "198.51.100.87",
-            "198.51.100.88", "198.51.100.89", "198.51.100.90", "198.51.100.91", "9.9.9.9", "192.168.1.1"]
+            "198.51.100.88", "198.51.100.89", "198.51.100.90", "198.51.100.91", "198.51.100.92", "9.9.9.9",
+            "192.168.1.1"]
 results: list[dict] = []
 procs: list[subprocess.Popen] = []
 
@@ -330,7 +331,7 @@ def main():
         kinds = {}
         for a in api("get", "/api/alerts?limit=500")["alerts"]:
             kinds.setdefault(a["kind"], a)
-        for k in ["no_dns", "dns_bypass_site", "sni_mismatch", "no_sni", "ech", "vpn_server", "doh_server",
+        for k in ["dns_bypass_site", "sni_mismatch", "no_sni", "ech", "vpn_server", "doh_server",
                   "protocol_violation", "evasion", "server_first", "http_proxy", "blocked_udp", "blocked_port",
                   "bypass_domain", "tunnel_behaviour", "new_device"]:
             record(sec, k, k in kinds, (kinds.get(k) or {}).get("detail", "")[:110])
@@ -387,7 +388,7 @@ def main():
         record(sec, "blocked sites counted", card["blocked_total"] > 0, card["blocked_total"])
         record(sec, "gateway outage shows in checks", any(c["name"] == "Gateway uptime" and c["level"] == "warn"
                                                           for c in h["checks"]), h["checks"])
-        nd = next(a for a in alerts if a["kind"] == "no_dns")
+        nd = next(a for a in alerts if a["kind"] in ("no_dns", "no_sni"))
         r = api("post", f"/api/alerts/{nd['id']}/review", {"verdict": "fp"})
         h2 = api("get", "/api/health?days=7")
         record(sec, "'Not a bypass' review recorded and calibrates", h2["reviews"]["fp"] == h["reviews"]["fp"] + 1 and

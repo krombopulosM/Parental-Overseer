@@ -22,7 +22,28 @@ def test_normal_https_allowed(env):
     assert env.kinds() == []
 
 
-def test_direct_ip_without_dns_is_reset(env):
+def test_direct_ip_is_judged_by_the_site_it_turns_out_to_be(env):
+    """Apps and browsers reuse addresses they remember: connecting without a lookup
+    through the gateway isn't a bypass by itself. A real, allowed site goes through
+    quietly; a blocked one is blocked by its name; one that won't say which site it's
+    for is what VPN apps with built-in servers look like."""
+    c = Conn(env.insp, KID, VPS_IP, 443)
+    assert c.syn().action == "accept"                              # not judged before we know what it is
+    assert c.send(client_hello("www.example.com")).action == "accept"
+    assert env.kinds() == []                                       # no false alarm
+    v = Conn(env.insp, KID, VPS_IP, 443, sport=40001).open_and_send(client_hello("pornhub.com"))
+    assert v.action == "reset" and v.kind == "dns_bypass_site"     # blocked by name, as ever
+    env.cfg["protections"]["hidden_names"] = False                 # isolate the direct-address check
+    v = Conn(env.insp, KID, VPS_IP, 443, sport=40002).open_and_send(client_hello(None))
+    assert (v.action, v.kind) == ("reset", "no_dns")
+    v = Conn(env.insp, KID, VPS_IP, 80, sport=40003).open_and_send(b"GET / HTTP/1.1\r\n\r\n")
+    assert (v.action, v.kind) == ("reset", "no_dns")
+    resolve(env, "relay.example.com", "45.32.9.9")                 # looked up through us: nameless is
+    assert Conn(env.insp, KID, "45.32.9.9", 443, sport=40004).open_and_send(client_hello(None)).action == "accept"
+
+
+def test_strict_direct_ip_blocks_before_the_handshake(env):
+    env.cfg["protections"]["direct_ip"] = "strict"
     v = Conn(env.insp, KID, VPS_IP, 443).syn()
     assert (v.action, v.kind) == ("reset", "no_dns")
 
@@ -179,8 +200,13 @@ def test_trusted_device_untouched(env):
 
 
 def test_log_mode_allows_but_alerts(env):
-    env.policy.forced_group = "consoles"           # dns_consistency: log
-    assert Conn(env.insp, KID, VPS_IP, 443).syn().action == "accept"
+    env.policy.forced_group = "consoles"           # direct_ip: log
+    env.cfg["groups"]["consoles"]["protections"]["hidden_names"] = False
+    c = Conn(env.insp, KID, VPS_IP, 443)
+    assert c.syn().action == "accept" and env.kinds() == []
+    assert Conn(env.insp, KID, VPS_IP, 443, sport=40001).open_and_send(client_hello("www.example.com")).action == "accept"
+    assert env.kinds() == []                                       # a named site: nothing to report
+    assert Conn(env.insp, KID, VPS_IP, 443, sport=40002).open_and_send(client_hello(None)).action == "accept"
     assert "no_dns" in env.kinds()
 
 

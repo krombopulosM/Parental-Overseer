@@ -17,6 +17,8 @@ from .alerts import KINDS
 from .auth import Auth
 from .activity import CLASSES
 from .confidence import CATEGORIES, KIND_META
+from . import settings
+from .protections import BYPASS_CATEGORIES
 from .schedule import FOREVER
 from .services import registrable_domain, service_label
 
@@ -177,6 +179,8 @@ def create_app(g) -> FastAPI:
                 "online": (d["last_seen"] or 0) > now - 300, "last_seen": d["last_seen"],
                 "paused": paused, "paused_reason": why, "suspect": bool(d.get("suspect")),
                 "blocked_all": (d.get("paused_until") or 0) >= FOREVER,
+                "categories": [c for c in g.policy.categories_for(did, grp) if c not in BYPASS_CATEGORIES],
+                "category_overrides": g.policy.category_overrides(did),
                 "first_seen": d.get("first_seen"),
                 "minutes_today": (online.get(did) or {}).get("minutes", 0),
                 "bytes_up": (data.get(did) or {}).get("bytes_up") or 0,
@@ -305,6 +309,15 @@ def create_app(g) -> FastAPI:
             if grp is not None and grp not in g.cfg["groups"]:
                 raise HTTPException(400, "unknown group")
             g.policy.set_device_group(device_id, grp)
+        if "category_overrides" in body:
+            known = {c["key"] for c in settings.category_catalog(g.cfg)}
+            for cat, how in (body["category_overrides"] or {}).items():
+                if cat not in known:
+                    raise HTTPException(400, f"unknown category {cat}")
+                try:
+                    g.policy.set_category_override(device_id, cat, how or None)
+                except ValueError as e:
+                    raise HTTPException(400, str(e))
         g.device_changed()
         return {"ok": True}
 
@@ -911,6 +924,37 @@ def create_app(g) -> FastAPI:
         except (ValueError, TypeError) as e:
             raise HTTPException(400, str(e))
         return g.updater.status()
+
+    @app.get("/api/categories")
+    def categories():
+        return {"categories": settings.category_catalog(g.cfg),
+                "groups": [{"name": n, "filtered": bool(gc.get("filtered")),
+                            "categories": [c for c in gc.get("categories") or [] if c not in BYPASS_CATEGORIES]}
+                           for n, gc in g.cfg["groups"].items()],
+                "default_group": g.cfg["default_group"]}
+
+    @app.post("/api/categories")
+    async def set_categories(req: Request):
+        """{group, category, blocked} switches one; {group, categories: [...]} sets the lot."""
+        body = await req.json()
+        grp = body.get("group")
+        if grp not in g.cfg["groups"]:
+            raise HTTPException(400, "unknown group")
+        cats = [c for c in g.cfg["groups"][grp].get("categories") or [] if c not in BYPASS_CATEGORIES]
+        if "categories" in body:
+            cats = list(body["categories"] or [])
+        else:
+            cat = body.get("category")
+            if body.get("blocked"):
+                cats = cats + ([cat] if cat not in cats else [])
+            else:
+                cats = [c for c in cats if c != cat]
+        try:
+            new = settings.set_group_categories(g.cfg, grp, cats)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        g.device_changed()
+        return {"ok": True, "categories": [c for c in new if c not in BYPASS_CATEGORIES]}
 
     @app.get("/api/protections")
     def get_protections():

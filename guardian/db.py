@@ -109,6 +109,7 @@ _ADDED_COLUMNS = [
     ("devices", "suspect", "INTEGER DEFAULT 0"),
     ("downloads", "kind", "TEXT DEFAULT 'download'"),
     ("alerts", "ref", "TEXT"),                 # extra reference, e.g. the TLS fingerprint involved
+    ("devices", "category_overrides", "TEXT"),  # JSON {category: "allow" | "block"} on top of the group's
 ]
 
 _FLOW_UPSERT = """
@@ -295,6 +296,11 @@ class DB:
         if it's seen again it comes back as a new device in the default group."""
         self.flush()
         self.execute("DELETE FROM devices WHERE device_id=?", (device_id,))
+
+    def set_category_overrides(self, device_id, overrides: dict):
+        import json as _json
+        self.execute("UPDATE devices SET category_overrides=? WHERE device_id=?",
+                     (_json.dumps(overrides, sort_keys=True) if overrides else None, device_id))
 
     def set_paused_until(self, device_id, until):
         self.execute("UPDATE devices SET paused_until=? WHERE device_id=?", (until, device_id))

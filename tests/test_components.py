@@ -301,6 +301,7 @@ def test_replay_tool(tmp_path):
            tcp(kid, site, 41000, 443, 100, 0x02),
            tcp(kid, site, 41000, 443, 101, 0x18, client_hello("www.example.com")),
            tcp(kid, vps, 41001, 443, 100, 0x02),
+           tcp(kid, vps, 41001, 443, 101, 0x18, client_hello(None)),      # straight to an address, no name
            udp(kid, vps, 41002, 51820, b"\x01\x00\x00\x00" + os.urandom(144))]
     pcap = str(tmp_path / "c.pcap")
     wrpcap(pcap, [Ether() / SIP(r) for r in raw])
@@ -309,6 +310,6 @@ def test_replay_tool(tmp_path):
     lines = []
     out = rp.replay(pcap, "kids", cfg=cfg, out=lines.append)
     kinds = {v.kind for _, v in out["blocked"]}
-    assert kinds == {"no_dns", "blocked_udp"}
+    assert kinds == {"no_sni", "blocked_udp"}
     assert len(out["allowed"]) == 1
     assert any("www.example.com" in l for l in lines)

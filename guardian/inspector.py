@@ -110,7 +110,7 @@ class FlowLabels:
 
 class _Flow:
     __slots__ = ("created", "last", "base", "segs", "buffered", "pkts", "empty", "got_payload",
-                 "verdict", "udp_first", "saw_stun", "saw_syn")
+                 "verdict", "udp_first", "saw_stun", "saw_syn", "no_dns")
 
     def __init__(self, now):
         self.created = self.last = now
@@ -124,6 +124,7 @@ class _Flow:
         self.udp_first = None
         self.saw_stun = False
         self.saw_syn = False
+        self.no_dns = None              # detail text when the address wasn't looked up through us
 
     def assemble(self) -> bytes:
         out = b""
@@ -268,6 +269,20 @@ class Inspector:
             return "off"
         return mode
 
+    def _nameless_direct(self, ctx, pkt, key, fl, what) -> Verdict | None:
+        """A connection straight to an address that also won't say which site it's for:
+        nothing ordinary does both, hard-coded VPN and proxy servers do."""
+        if not fl.no_dns:
+            return None
+        mode = self._consistency_mode(ctx, pkt.dst)
+        detail = f"{fl.no_dns}, then {what} - typical of a VPN or proxy app with a built-in server address"
+        if mode == "enforce":
+            return self._block(ctx, pkt, key, "no_dns", detail, flow=fl)
+        if mode == "log":
+            self.alerts and self.alerts.emit("no_dns", device_id=ctx.device_id, client_ip=ctx.ip, dst=pkt.dst,
+                                             detail=detail, action="allowed (log mode)", severity="low")
+        return None
+
     # ------------------------------------------------------------ TCP 80/443
     def _tcp_web(self, ctx, pkt, key, now) -> Verdict:
         fl = self.flows.get(key)
@@ -284,8 +299,8 @@ class Inspector:
             fl.base = (pkt.seq + 1) & 0xFFFFFFFF
             fl.saw_syn = True
             mode = self._consistency_mode(ctx, pkt.dst)
-            if mode != "off" and now < self.handover_until and self.dnscache.resolved_by(ctx.ip, pkt.dst) is None \
-                    and self.dnscache.lookup_db(ctx.ip, pkt.dst) is None and mode == "enforce" and fl.pkts == 1:
+            if mode == "strict" and now < self.handover_until and self.dnscache.resolved_by(ctx.ip, pkt.dst) is None \
+                    and self.dnscache.lookup_db(ctx.ip, pkt.dst) is None and fl.pkts == 1:
                 # Just after an update the previous process may have answered this lookup a
                 # moment ago and its note isn't written yet: hold back the first SYN only.
                 # The device resends it a second later and it's judged normally then.
@@ -294,15 +309,18 @@ class Inspector:
             if mode != "off" and self.dnscache.resolved_by(ctx.ip, pkt.dst) is None:
                 known = self.dnscache.names_for_ip(pkt.dst)
                 detail = (f"Connected to {pkt.dst}:{pkt.dport} without looking it up through the "
-                          f"gateway's DNS (hard-coded VPN/proxy address, private DNS, or a "
-                          f"hosts-file entry)")
+                          f"gateway's DNS")
                 if known:
                     detail += f"; that IP is known as {sorted(known)[0]}"
-                if mode == "enforce":
-                    return self._block(ctx, pkt, key, "no_dns", detail, flow=fl)
-                self.alerts and self.alerts.emit("no_dns", device_id=ctx.device_id, client_ip=ctx.ip,
-                                                 dst=pkt.dst, detail=detail, action="allowed (log mode)",
-                                                 severity="low")
+                if mode == "strict":
+                    return self._block(ctx, pkt, key, "no_dns",
+                                       detail + " (hard-coded VPN/proxy address, private DNS, or a hosts-file "
+                                                "entry)", flow=fl)
+                # Apps and browsers often reuse addresses they remember, or look them up some
+                # other way: that alone says nothing. Wait for the handshake - a real site says
+                # its name and is judged by it; a tunnel to a hard-coded address doesn't.
+                fl.no_dns = detail
+                self.stats["no_dns_seen"] += 1
             return ALLOW
 
         if not pkt.payload:
@@ -378,6 +396,19 @@ class Inspector:
                                f"{name}: a download from this site is waiting for your review",
                                alert=False, flow=fl)
         d = self.policy.decide(ctx, name)
+        if not d.block and fl.no_dns and self.adult is not None and self.adult.safesearch_target(name, ctx):
+            # A SafeSearch-locked site (Google, Bing, YouTube...) through an address the gateway
+            # didn't hand out: the hosts-file trick for unlocked search. Ordinary direct
+            # connections are fine; this one isn't.
+            mode = self._consistency_mode(ctx, pkt.dst)
+            detail = (f"{what} {name} reached through {pkt.dst}, an address the gateway didn't give out - "
+                      f"gets around locked SafeSearch")
+            if mode in ("enforce", "strict"):
+                return self._block(ctx, pkt, key, "no_dns", detail, domain=registrable_domain(name), flow=fl)
+            if mode == "log":
+                self.alerts and self.alerts.emit("no_dns", device_id=ctx.device_id, client_ip=ctx.ip, dst=pkt.dst,
+                                                 domain=name, detail=detail, action="allowed (log mode)",
+                                                 severity="low")
         if not d.block and self.adult is not None:
             hit = self.adult.check_name(ctx, name)
             if hit:
@@ -419,6 +450,9 @@ class Inspector:
                                    f"TLS to {pkt.dst} without a site name"
                                    + (f" (used IP {ch.sni})" if ch.sni else "")
                                    + " - typical of VPN/proxy clients", flow=fl, ref=ch.ja4)
+            v = self._nameless_direct(ctx, pkt, key, fl, "an encrypted connection that doesn't say which site it's for")
+            if v is not None:
+                return v
             fl.verdict = DONE
             return DONE
         if self._p(ctx, "tor") and looks_like_tor_sni(ch.sni) and not self.dnscache.names_for_ip(pkt.dst):
@@ -464,6 +498,9 @@ class Inspector:
             if self._p(ctx, "hidden_names") and pkt.dst not in self.lists.exempt:
                 return self._block(ctx, pkt, key, "no_sni",
                                    f"HTTP request to {pkt.dst} without a site name", flow=fl)
+            v = self._nameless_direct(ctx, pkt, key, fl, "a web request that doesn't name a site")
+            if v is not None:
+                return v
             fl.verdict = DONE
             return DONE
         return self._name_checks(ctx, pkt, key, fl, req.host, "HTTP Host")

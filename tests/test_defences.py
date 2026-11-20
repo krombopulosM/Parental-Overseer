@@ -70,6 +70,7 @@ def test_whatsapp_protocol_exempt(env):
 
 
 def test_marked_fine_destination_skips_checks(env):
+    env.cfg["protections"]["direct_ip"] = "strict"
     assert Conn(env.insp, KID, VPS, 443).syn().kind == "no_dns"
     env.insp.allow_ips.add(VPS)
     assert Conn(env.insp, KID, VPS, 443, sport=41000).syn().action == "accept"

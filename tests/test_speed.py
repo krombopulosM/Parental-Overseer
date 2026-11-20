@@ -172,6 +172,7 @@ def test_watch_only_reports_vpn_on_the_first_packet(env):
 
 
 def test_watch_only_direct_address_check_only_for_our_dns_users(env):
+    env.cfg["protections"]["direct_ip"] = "strict"                   # judged on the first packet
     env.insp.dns_users = lambda ip: False                            # this device uses its own DNS
     env.insp.observe(tcp(KID, VPS, 40001, 443, 1, 0x02))
     assert "no_dns" not in env.kinds()                                # otherwise everything would be flagged

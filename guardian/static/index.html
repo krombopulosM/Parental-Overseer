@@ -6,6 +6,10 @@
 <title>Parental Gateway</title>
 <meta name="theme-color" content="#161d2a" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<script>
+  // Light / dark chosen in Settings (this browser only); applied before the page draws.
+  try { var t = localStorage.getItem("pg-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) { }
+</script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Family">
@@ -51,7 +55,7 @@
         <a href="#alerts" data-v="alerts">Alerts<span class="count" data-count="alerts" hidden></span></a>
         <a href="#downloads" data-v="downloads">Reviews<span class="count" data-count="reviews" hidden></span></a>
         <a href="#rules" data-v="rules">Rules &amp; schedules</a>
-        <a href="#system" data-v="system">System</a>
+        <a href="#system" data-v="system">Settings</a>
         <a href="#guide" data-v="guide">Guide</a>
       </nav>
       <div class="top-right">
@@ -77,7 +81,7 @@
     <a href="#health" data-v="health">Health <span class="muted small">blocked attempts over time</span></a>
     <a href="#activity" data-v="activity">Activity <span class="muted small">time and data by site</span></a>
     <a href="#rules" data-v="rules">Rules &amp; schedules <span class="muted small">sites, bedtimes, protections</span></a>
-    <a href="#system" data-v="system">System <span class="muted small">address, password, setup</span></a>
+    <a href="#system" data-v="system">Settings <span class="muted small">what's blocked, appearance, password, updates</span></a>
     <a href="#guide" data-v="guide">Guide <span class="muted small">how everything works</span></a>
     <div class="sheet-foot"><span class="badge" id="mode-badge-m"></span><button class="small" id="logout-m">Sign out</button></div>
   </div>

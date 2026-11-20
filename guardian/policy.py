@@ -8,6 +8,7 @@ Decision order for a name:
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -25,10 +26,15 @@ class DeviceCtx:
     group: str
     g: dict = field(repr=False)
     hostname: str | None = None
+    categories: list | None = None          # the group's, adjusted by this device's own choices
 
     @property
     def filtered(self) -> bool:
         return bool(self.g.get("filtered"))
+
+    def blocks(self, category: str) -> bool:
+        cats = self.categories if self.categories is not None else (self.g.get("categories") or [])
+        return category in cats
 
 
 @dataclass
@@ -50,6 +56,7 @@ class Policy:
         self._groups: dict[str, str | None] = {}
         self._touched: dict[str, float] = {}
         self._suspect: set[str] = set()
+        self._overrides: dict[str, dict] = {}
         self._lock = threading.Lock()
         self.reload()
 
@@ -59,10 +66,20 @@ class Policy:
         devices = self.db.list_devices() if self.db else []
         groups = {d["device_id"]: d.get("group_name") for d in devices}
         suspect = {d["device_id"] for d in devices if d.get("suspect")}
+        overrides = {}
+        for d in devices:
+            try:
+                o = json.loads(d.get("category_overrides") or "{}")
+            except ValueError:
+                o = {}
+            o = {k: v for k, v in o.items() if v in ("allow", "block")}
+            if o:
+                overrides[d["device_id"]] = o
         with self._lock:
             self._rules = rules
             self._groups = groups
             self._suspect = suspect
+            self._overrides = overrides
 
     def group_name(self, device_id: str) -> str:
         if self.forced_group:
@@ -79,6 +96,36 @@ class Policy:
         g = self._groups.get(device_id)
         return g if g in self.cfg["groups"] else self.cfg["default_group"]
 
+    def category_overrides(self, device_id: str) -> dict:
+        return dict(self._overrides.get(device_id) or {})
+
+    def categories_for(self, device_id: str, group: str | None = None) -> list:
+        """The categories blocked for this device: its group's, then its own choices
+        (allow / block) on top. A device whose identity is in doubt gets the group's
+        only - a copied address mustn't bring another child's allowances with it."""
+        group = group or self.group_name(device_id)
+        cats = list(self.cfg["groups"][group].get("categories") or [])
+        if device_id in self._suspect:
+            return cats
+        for cat, how in (self._overrides.get(device_id) or {}).items():
+            if how == "allow" and cat in cats:
+                cats.remove(cat)
+            elif how == "block" and cat not in cats:
+                cats.append(cat)
+        return cats
+
+    def set_category_override(self, device_id: str, category: str, how: str | None):
+        if how not in (None, "allow", "block"):
+            raise ValueError("choose allow, block or the group's setting")
+        o = self.category_overrides(device_id)
+        if how is None:
+            o.pop(category, None)
+        else:
+            o[category] = how
+        self.db.update_device(device_id)
+        self.db.set_category_overrides(device_id, o)
+        self.reload()
+
     def set_device_group(self, device_id: str, group: str | None):
         if group is not None and group not in self.cfg["groups"]:
             raise ValueError(f"unknown group {group}")
@@ -94,7 +141,7 @@ class Policy:
             device_id, mac = self.identity.device_id_for(ip)
         group = self.group_name(device_id)
         ctx = DeviceCtx(device_id, ip, mac, group, self.cfg["groups"][group],
-                        self.identity.hostname_for(mac))
+                        self.identity.hostname_for(mac), self.categories_for(device_id, group))
         self._touch(ctx)
         return ctx
 
@@ -141,7 +188,8 @@ class Policy:
             v = self._bypass_decision(ctx, name)
             if v is not None:
                 return v
-        cats = [c for c in ctx.g.get("categories") or [] if c not in BYPASS_CATEGORIES]
+        cats = [c for c in (ctx.categories if ctx.categories is not None else ctx.g.get("categories") or [])
+                if c not in BYPASS_CATEGORIES]
         cat = self.lists.category_match(name, cats)
         if cat:
             return Decision(True, f"category: {cat}", cat)

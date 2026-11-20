@@ -104,7 +104,8 @@ def test_vpn_switch(penv):
     v = Conn(penv.insp, KID, "185.159.157.5", 443).syn()
     assert v.kind == "vpn_server"
     off(penv, "vpn")
-    v = Conn(penv.insp, KID, "185.159.157.5", 443, sport=40001).syn()
+    off(penv, "hidden_names")
+    v = Conn(penv.insp, KID, "185.159.157.5", 443, sport=40001).open_and_send(client_hello(None))
     assert v.kind == "no_dns"                            # the direct-address check still applies
     off(penv, "direct_ip", "off")
     assert Conn(penv.insp, KID, "185.159.157.5", 443, sport=40002).syn().action == "accept"
@@ -164,13 +165,18 @@ def test_hidden_names_switch(penv):
 
 
 def test_direct_ip_choices(penv):
-    assert Conn(penv.insp, KID, VPS_IP, 443).syn().kind == "no_dns"
+    off(penv, "hidden_names")                            # so the direct-address check decides alone
+    nameless = client_hello(None)
+    assert Conn(penv.insp, KID, VPS_IP, 443).syn().action == "accept"                 # default: judged later
+    assert Conn(penv.insp, KID, VPS_IP, 443, sport=40001).open_and_send(nameless).kind == "no_dns"
+    off(penv, "direct_ip", "strict")
+    assert Conn(penv.insp, KID, VPS_IP, 443, sport=40002).syn().kind == "no_dns"      # strict: at once
     n = len(penv.alerts.memory)
     off(penv, "direct_ip", "log")
-    assert Conn(penv.insp, KID, "45.32.1.2", 443).syn().action == "accept"
+    assert Conn(penv.insp, KID, "45.32.1.2", 443).open_and_send(nameless).action == "accept"
     assert len(penv.alerts.memory) == n + 1 and penv.alerts.memory[-1]["kind"] == "no_dns"
     off(penv, "direct_ip", "off")
-    assert Conn(penv.insp, KID, "45.32.1.3", 443).syn().action == "accept"
+    assert Conn(penv.insp, KID, "45.32.1.3", 443).open_and_send(nameless).action == "accept"
     assert len(penv.alerts.memory) == n + 1
 
 
@@ -266,6 +272,7 @@ def test_nft_ruleset_supports_open_groups_and_per_group_lists():
 
 def test_handover_grace_only_holds_back_enforced_direct_connections(penv):
     import time as _t
+    off(penv, "direct_ip", "strict")                    # the only mode that judges the first SYN
     penv.insp.handover_until = _t.time() + 20
     c2 = Conn(penv.insp, KID, VPS_IP, 443, sport=40009)
     v = c2.syn()
@@ -280,5 +287,5 @@ def test_handover_grace_only_holds_back_enforced_direct_connections(penv):
         def query(self, sql, params):
             return [{"name": "relay.example", "expires": _t.time() + 600}] if params[1] == "45.32.1.9" else []
     penv.dnscache.db = FakeDB()
-    off(penv, "direct_ip", "enforce")
+    off(penv, "direct_ip", "strict")
     assert Conn(penv.insp, KID, "45.32.1.9", 443, sport=40002).syn().action == "accept"

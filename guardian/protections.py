@@ -60,11 +60,15 @@ PROTECTIONS: dict[str, dict] = {
     },
     "direct_ip": {
         "label": "Direct-to-address connections",
-        "does": "Devices may only connect to addresses the gateway's DNS gave them. Hard-coded VPN or proxy "
-                "addresses, hosts-file entries and domain fronting (a connection claiming one site while "
-                "going to another) are refused.",
+        "does": "Connections to an address that wasn't looked up through the gateway are judged by the site "
+                "they turn out to be for: a real, allowed site goes through (apps and browsers often reuse "
+                "addresses they remember), one that won't say which site it's for is refused - that's how VPN "
+                "and proxy apps with built-in server addresses look. Domain fronting (a connection claiming one "
+                "site while going to another) is refused. 'Strict' refuses every connection that wasn't looked "
+                "up first: it catches more hard-coded servers, but some apps and sites stop working.",
         "off": "Apps with built-in server addresses connect without ever looking anything up.",
-        "choices": [["enforce", "Block"], ["log", "Allow and tell me"], ["off", "Off"]],
+        "choices": [["enforce", "Block unnamed ones"], ["strict", "Strict: block all"], ["log", "Allow and tell me"],
+                    ["off", "Off"]],
         "group": "Tricks",
     },
     "dns_tunnels": {
@@ -125,7 +129,7 @@ def _norm(key, v):
         if v is False:
             return "off"
         v = str(v).lower()
-        return v if v in ("enforce", "log", "off") else "enforce"
+        return v if v in ("enforce", "strict", "log", "off") else "enforce"
     if key == "non_web":
         if v is True:
             return "block"

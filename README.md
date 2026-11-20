@@ -106,7 +106,7 @@ Each layer works independently, so a VPN that slips past one hits the next.
 | **ECH disabled** | HTTPS/SVCB records stripped, so browsers never get Encrypted Client Hello keys | Hiding the site name in the handshake |
 | **Web ports only** | Kids get TCP 80/443 and small NTP packets; nothing else leaves | WireGuard, OpenVPN-UDP, IPsec, Tor ORPort, Shadowsocks, QUIC/HTTP3 (browsers fall back to TCP), Mullvad's QUIC obfuscation |
 | **Protocol conformance** | Port 443 must open with a real TLS handshake; port 80 must be real HTTP | Mullvad udp2tcp, OpenVPN-over-TCP, Shadowsocks/obfs4/VLESS, SSH-on-443, server-first protocols, HTTP CONNECT proxies |
-| **DNS consistency** | A kid's device may only connect to IPs the Pi's DNS gave it | Hard-coded VPN server IPs, VPN apps' built-in resolvers, Proton's "alternative routing", hosts-file entries, Reality-style disguises |
+| **Direct-to-address check** | A connection to an address the Pi's DNS didn't hand out must name a real, allowed site; one that won't say which site it's for is refused, and SafeSearch sites must use the locked address (*Strict* refuses every such connection) | Hard-coded VPN server IPs, VPN apps' built-in resolvers, Proton's "alternative routing", hosts-file tricks to unlock SafeSearch |
 | **Site-name checks** | The TLS name must be present, allowed, and match what DNS returned for that IP | No-SNI clients, domain fronting, `www.microsoft.com` disguises, ECH fronts, blocked sites on shared CDN IPs |
 | **VPN / DoH IP lists** | Mullvad relays, Proton servers, Tor relays, Cloudflare WARP, public resolvers (refreshed daily) | Direct connections to known VPN servers |
 | **Anti-evasion** | Handshakes split into tiny TCP segments or TLS records are reassembled; handshakes still unfinished after the inspection window are blocked | GoodbyeDPI-style fragmentation tricks |
@@ -181,7 +181,7 @@ on knowing the server:
 
 - **Web ports only** for children: VPN protocols and Tor's relay port can't leave the device, whatever the server.
 - **Genuine-protocol check** on web ports: disguised tunnels (Shadowsocks, obfs4, fake-TLS "stealth" modes) fail.
-- **Only addresses the gateway's DNS handed out:** VPN apps and Tor connect to built-in addresses without DNS, so new or unlisted servers are refused on the first packet.
+- **Connections straight to an address:** apps and browsers often reuse addresses they remember, so that alone isn't treated as a bypass - a connection that names a real, allowed site goes through. One that won't say which site it's for (how VPN apps and Tor bridges with built-in servers look) is refused, and SafeSearch sites must go to the locked address the gateway handed out. *Strict* refuses every connection that wasn't looked up first: it catches more, but some apps and sites stop working.
 - **Tor's handshake shape:** made-up `www.<random>.com` names that were never looked up.
 - **Learned fingerprints:** once any tunnel is caught (behaviour, hidden site name, disguise, or your "Confirmed"), its software's TLS (JA4) fingerprint is blocked on *every* server. Fingerprints browsers use for normal sites are never learned. They're listed on Rules & schedules, with a Forget button.
 - **Unknown destinations:** heavy traffic (15 MB, or 10 min with 3 MB) to a site that isn't popular (Tranco / Umbrella top lists), a known service, used by an adult in the house, or approved is cut and held for review. Hosting platforms (Workers, EC2, Heroku…) never count as known. This is what catches tunnels with real domains and real encryption (CDN-routed VLESS/V2Ray, Tor WebTunnel bridges, self-hosted VPNs).
@@ -498,7 +498,7 @@ Open the dashboard from any device at home: **http://family.local**
 
 ## Updates (no downtime)
 
-The gateway checks for updates every hour; **System → Updates → Check for
+The gateway checks for updates every hour; **Settings → Updates → Check for
 updates** checks now. New versions install automatically (or on **Install now**
 if you turn automatic installs off). Wi-Fi and filtering are never interrupted:
 
@@ -543,7 +543,7 @@ updates:
 Updates come from this repository's `main` branch by default. If you run
 `setup-pi.sh` from a clone of a fork, it points updates at that fork instead
 (from the clone's `origin`). You can also change the source in
-**System → Updates → Where updates come from**.
+**Settings → Updates → Where updates come from**.
 
 Installed layout (made by `tools/install.py`):
 
@@ -573,7 +573,7 @@ Nobody needs to find the Pi's IP address. The dashboard answers to a name,
 
 - Port 80 is redirected to the dashboard, so there's no `:8080` to remember;
   `https://` is refused immediately so browsers fall back to `http://` without waiting.
-- **System → Dashboard address** shows the address with a QR code; on a phone,
+- **Settings → Dashboard address** shows the address with a QR code; on a phone,
   *Add to Home Screen* installs it with its own icon.
 - The name is answered before any filtering, so a new or paused device can still
   find the dashboard - but only adults' devices can open it, and it needs the password.
@@ -591,7 +591,7 @@ never overwriting each other) and git ignores. Re-running the script is safe.
 
 ## First-time setup wizard
 
-The first sign-in opens a step-by-step wizard (and **System → Run setup again**
+The first sign-in opens a step-by-step wizard (and **Settings → Run setup again**
 reopens it):
 
 | Step | What it sets |
@@ -599,7 +599,7 @@ reopens it):
 | How it runs | The dashboard's name (`family` → http://family.local). Detects the platform, admin rights, interfaces, firewall, capture support and blocklists, and shows a pass/warn checklist. On a PC: what it does (watch only, or block on this PC and its Mobile Hotspot - Windows), DNS port (53 for real devices, 5300 for testing) and who can open the dashboard. On the Pi: the detected ports plus a house checklist. |
 | Protection level | **Strict** (recommended), **Balanced** or **Light** presets. |
 | Fine-tune | Adult-content mode, SafeSearch, YouTube Restricted Mode, family DNS, unknown video, downloads, unknown destinations, auto-pause after bypass attempts / network attacks. |
-| What to block | Categories for the kids, consoles and new-device groups. |
+| What to block | Categories for the kids, consoles and new-device groups (change them per group later in **Settings → What's blocked for each group**). |
 | Ways around | Each anti-bypass protection on or off: VPNs, Tor, proxies, encrypted DNS, disguised tunnels, hidden site names, direct-to-address connections, DNS tunnels, non-web traffic (web only / games / everything), torrent protocols, behaviour detection, gateway-attack reports. |
 | Devices | Names and groups for devices already seen; the device you're using is suggested as an adult's; what happens to new devices. |
 | Bedtime | Internet-off window for the children's groups (never adults). |
@@ -631,7 +631,9 @@ would cut the dashboard off, so that stays in `setup-pi.sh`.
   online time, data, blocks and alerts per device, sortable by any column, with
   search and filters (online, new, paused, by group).
   - **Right-click** a device (or **press and hold** it on a phone, or use its
-    ⋯ button) for: Open, Watch live, Rename, Move to group, Settings…, Pause
+    ⋯ button) for: Open, Watch live, Rename, Move to group, Allow or block
+    categories (this device only: e.g. one child allowed gambling sites and
+    another not), Settings…, Pause
     internet (15 min / 1 h / 2 h / until 7:00), **Block all traffic** (until you
     unblock it), Resume, Copy IP / MAC, and Forget device.
   - Click selects; **Ctrl/Shift-click** selects several and the menu (or the bar
@@ -654,7 +656,7 @@ would cut the dashboard off, so that stays in `setup-pi.sh`.
   Tor, encrypted DNS, MAC/DHCP/ARP, torrents and what encryption hides.
 - **Rules & schedules:** block/allow sites for everyone or a group,
   internet-off times, automatically blocked destinations.
-- **System:** component health, blocklist status, inspector counters, password.
+- **Settings:** what each group blocks (a tick per category per group: adult content blocked but gambling allowed, and so on), appearance (light, dark, or match the device), the dashboard address, updates, diagnostics, component health, blocklist status, inspector counters, password.
 
 "Online time" counts minutes in which a device actually moved data with a
 service, so idle background connections don't inflate it.
@@ -677,7 +679,7 @@ Categories, lists, detector thresholds and schedules are all in
 
 ## Getting help: diagnostics
 
-**System → Help & diagnostics → Download diagnostics** makes a zip to send to
+**Settings → Help & diagnostics → Download diagnostics** makes a zip to send to
 whoever is helping (with an optional note about what's wrong). If the dashboard
 won't open: `sudo parental-gateway-diagnostics` on the Pi, or
 `python run.py --diagnostics` anywhere.
@@ -703,7 +705,7 @@ never included.
 ## Tests
 
 ```bash
-pytest -q                               # 238 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard, card...)
+pytest -q                               # 246 unit tests (parsers, inspector, torrents, LAN watch, activity, downloads, adult, setup wizard, card...)
 sudo python3 tests/e2e/run_e2e.py       # Linux only: full end-to-end test of gateway mode
 sudo python3 tests/e2e/bench.py         # Linux only: speed of a child's vs. an adult's connections
 sudo image/qemu-test.sh <image.img.xz>  # Linux only: boot the card image in an emulated Pi (slow)

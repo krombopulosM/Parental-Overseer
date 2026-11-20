@@ -17,8 +17,8 @@ import time
 import traceback
 
 
-def _syn(src, dst, dport) -> bytes:
-    tcp = struct.pack("!HHIIBBHHH", 40000, dport, 1000, 0, 5 << 4, 0x02, 65535, 0, 0)
+def _syn(src, dst, dport, flags=0x02, seq=1000, payload=b"") -> bytes:
+    tcp = struct.pack("!HHIIBBHHH", 40000, dport, seq, 0, 5 << 4, flags, 65535, 0, 0) + payload
     ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 1, 0, 64, 6, 0,
                      socket.inet_aton(src), socket.inet_aton(dst))
     return ip + tcp
@@ -72,9 +72,14 @@ def run(config_path: str) -> int:
         policy.forced_group = next((n for n, g in cfg["groups"].items() if g.get("filtered")), None)
         cache = DnsCache(60)
         insp = Inspector(cfg, policy, lists, cache, alerts, FlowLabels())
-        # a filtered device connecting somewhere it never looked up must not get through
-        v = insp.inspect(_syn("192.0.2.50", "198.51.100.200", 443))
-        if policy.forced_group and v.action == "accept" and cfg["protections"].get("direct_ip") == "enforce":
+        # a filtered device connecting somewhere it never looked up, without saying which
+        # site it's for (how a VPN app with a built-in server looks), must not get through
+        mode = cfg["protections"].get("direct_ip")
+        v = insp.inspect(_syn("192.0.2.50", "198.51.100.200", 80))
+        if v.action == "accept":
+            v = insp.inspect(_syn("192.0.2.50", "198.51.100.200", 80, flags=0x18, seq=1001,
+                                  payload=b"GET / HTTP/1.1\r\n\r\n"))
+        if policy.forced_group and v.action == "accept" and mode in ("enforce", "strict"):
             raise AssertionError(f"direct-address check let a connection through: {v}")
         # the dashboard name is answered without the internet
 

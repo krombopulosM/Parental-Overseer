@@ -43,6 +43,12 @@ _YOUTUBE = {"www.youtube.com", "m.youtube.com", "youtubei.googleapis.com", "yout
 _PROXY_SUFFIXES = (".translate.goog", ".cdn.ampproject.org")
 
 
+def _blocks(ctx, category: str) -> bool:
+    if hasattr(ctx, "blocks"):
+        return ctx.blocks(category)
+    return category in ((getattr(ctx, "g", None) or {}).get("categories") or [])
+
+
 def _decode_dashed(label: str) -> str:
     """Google's encoding: '-' separates labels, '--' is a literal hyphen."""
     return label.replace("--", "\x00").replace("-", ".").replace("\x00", "-")
@@ -64,13 +70,18 @@ class AdultGuard:
 
     # ------------------------------------------------------------ policy
     def mode(self, ctx) -> str:
-        if not ctx.filtered:
+        """The adult layers (name heuristics, family DNS, proxy decoding) follow the
+        'Adult content' category: a group or device it's switched off for skips them."""
+        if not ctx.filtered or not _blocks(ctx, "adult"):
             return "off"
         m = (ctx.g or {}).get("adult_protection") or self.default_mode
         return m if m in ("strict", "standard", "off") else "strict"
 
-    def unknown_video_policy(self, group_cfg) -> str:
+    def unknown_video_policy(self, group_cfg, categories=None) -> str:
         if not group_cfg or not group_cfg.get("filtered"):
+            return "off"
+        cats = categories if categories is not None else (group_cfg.get("categories") or [])
+        if "adult" not in cats:
             return "off"
         m = group_cfg.get("adult_protection") or self.default_mode
         if m == "off":
@@ -81,7 +92,12 @@ class AdultGuard:
 
     # ------------------------------------------------------------ 1. SafeSearch
     def safesearch_target(self, qname: str, ctx) -> str | None:
-        if not self.safesearch or self.mode(ctx) == "off":
+        """SafeSearch (and restricted YouTube) follow the 'Search engines without
+        SafeSearch' category: unblocking that for someone means unfiltered search."""
+        if not self.safesearch or not ctx.filtered or not _blocks(ctx, "unsafe_search"):
+            return None
+        m = (ctx.g or {}).get("adult_protection") or self.default_mode
+        if m == "off":
             return None
         if _GOOGLE.match(qname):
             return "forcesafesearch.google.com"

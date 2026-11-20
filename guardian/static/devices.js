@@ -27,6 +27,8 @@ const COLS = [
       <a href="#device/${encodeURIComponent(x.device_id)}" class="dt-label" tabindex="-1">${esc(x.label)}</a>
       ${x.device_id === DT.you ? `<span class="badge info">this device</span>` : ""}
       ${!x.group_set ? `<span class="badge info" title="Not assigned yet - using the default group">new</span>` : ""}
+      ${Object.keys(x.category_overrides || {}).length ? `<span class="badge" title="${esc(Object.entries(x.category_overrides)
+        .map(([c, h]) => `${c}: ${h === "allow" ? "allowed" : "blocked"} for this device`).join(", "))}">${Object.keys(x.category_overrides).length} own setting${Object.keys(x.category_overrides).length === 1 ? "" : "s"}</span>` : ""}
       ${x.suspect ? `<span class="badge bad" title="Its identity looks copied - filtered until you confirm">identity check</span>` : ""}
       ${x.blocked_all ? `<span class="badge bad show-sm-inline">blocked</span>` : x.paused ? `<span class="badge warn show-sm-inline">paused</span>` : ""}
       ${x.alerts ? `<span class="badge bad show-sm-inline" title="bypass attempts today">${x.alerts} ⚠</span>` : ""}</div>
@@ -236,6 +238,7 @@ function menuItems(ids) {
     items.push({ label: "Rename", hint: "F2", run: () => startRename(one.device_id) });
   }
   items.push({ label: "Move to group", sub: groups });
+  if (one) items.push({ label: "Allow or block categories…", run: () => openSettings(one.device_id, "cats") });
   if (one) items.push({ label: "Settings…", run: () => openSettings(one.device_id) });
   items.push("-");
   if (anyPaused) items.push({ label: allBlocked ? "Unblock" : devs.length > 1 ? "Resume / unblock" : "Resume", strong: true, run: () => pauseDevs(ids, 0) });
@@ -379,9 +382,21 @@ function askConfirm({ title, body, ok, danger }) {
   });
 }
 
-async function openSettings(id) {
+async function openSettings(id, focus) {
   const x = devById(id);
   if (!x) return;
+  let catalog = null;
+  try { catalog = await api("/api/categories"); } catch (_) { /* the rest of the dialog still works */ }
+  const ov = x.category_overrides || {};
+  const groupBlocks = (grp, cat) => !!catalog && (catalog.groups.find(g => g.name === grp) || { categories: [] }).categories.includes(cat);
+  const inheritText = (grp, cat) => `Like its group (${groupBlocks(grp, cat) ? "blocked" : "allowed"})`;
+  const catRows = catalog ? catalog.categories.map(c => `
+      <label class="dt-cat"><span class="dt-cat-name" title="${esc(c.description)}">${esc(c.label)}</span>
+        <select name="cat:${esc(c.key)}" data-cat="${esc(c.key)}" aria-label="${esc(c.label)} for this device">
+          <option value="" ${!ov[c.key] ? "selected" : ""}>${esc(inheritText(x.group, c.key))}</option>
+          <option value="allow" ${ov[c.key] === "allow" ? "selected" : ""}>Always allow</option>
+          <option value="block" ${ov[c.key] === "block" ? "selected" : ""}>Always block</option>
+        </select></label>`).join("") : `<div class="small muted">Couldn't load the categories.</div>`;
   let d = $("#dt-dialog");
   if (!d) { d = document.createElement("dialog"); d.id = "dt-dialog"; d.className = "dt-dialog"; document.body.append(d); }
   const net = x.blocked_all ? "block" : x.paused ? "keep" : "on";
@@ -391,14 +406,17 @@ async function openSettings(id) {
     <label class="dt-field"><span>Name</span><input name="name" maxlength="60" value="${esc(x.name || "")}" placeholder="${esc(x.label)}"></label>
     <label class="dt-field"><span>Group</span><select name="group">${state.groups.map(g =>
       `<option value="${esc(g.name)}" ${g.name === x.group ? "selected" : ""}>${esc(g.name)} (${gi(g)})</option>`).join("")}</select></label>
+    <div class="dt-field" id="dt-cats"><span>What's blocked for this device</span>
+      <div class="small muted">Only this device - the group's choices are in <a href="#system">Settings</a>.</div>
+      <div class="dt-cat-list">${catRows}</div></div>
     <div class="dt-field"><span>Internet</span><div class="dt-radios">
       <label class="dt-radio"><input type="radio" name="net" value="on" ${net === "on" ? "checked" : ""}> On</label>
       ${x.paused && !x.blocked_all ? `<label class="dt-radio"><input type="radio" name="net" value="keep" checked> Keep it ${esc(x.paused_reason)}</label>` : ""}
       <label class="dt-radio"><input type="radio" name="net" value="pause"> Pause for 1 hour</label>
       <label class="dt-radio"><input type="radio" name="net" value="block" ${net === "block" ? "checked" : ""}> Block all traffic until I unblock it</label>
     </div></div>
-    <p class="small muted">Filtering and the ways-around-the-filter protections come from the group:
-      <a href="#rules">change what each group allows</a>.</p>
+    <p class="small muted">The ways-around-the-filter protections come from the group:
+      <a href="#rules">change them per group</a>.</p>
     <dl class="dt-facts small">
       <dt>IP address</dt><dd class="mono">${esc(x.ip || "-")}</dd>
       <dt>MAC address</dt><dd class="mono">${esc(x.mac || "-")}</dd>
@@ -413,19 +431,34 @@ async function openSettings(id) {
     if (d.returnValue !== "save") return;
     const f = new FormData(d.querySelector("form"));
     const name = String(f.get("name") || "").trim(), group = f.get("group"), netNew = f.get("net");
+    const cats = {};
+    $$("select[data-cat]", d).forEach(sel => {
+      const now = sel.value || null, before = ov[sel.dataset.cat] || null;
+      if (now !== before) cats[sel.dataset.cat] = now;
+    });
     if (netNew === "block" && net !== "block" && x.device_id === DT.you &&
       !(await askConfirm({ title: "Block the device you're using?", body: "This dashboard stays reachable from it so you can unblock it.", ok: "Block", danger: true }))) return;
     await act(async () => {
       const body = {};
       if (name !== (x.name || "")) body.name = name;
       if (group !== x.group) body.group = group;
+      if (Object.keys(cats).length) body.category_overrides = cats;
       if (Object.keys(body).length) await post(`/api/devices/${encodeURIComponent(id)}`, body);
       const m = { on: 0, pause: 60, block: -1 }[netNew];
       if (m !== undefined && netNew !== net) await post(`/api/devices/${encodeURIComponent(id)}/pause`, { minutes: m });
     }, "Saved");
   };
+  // "Like its group" follows the group picked above
+  const grpSel = d.querySelector("select[name=group]");
+  grpSel.addEventListener("change", () => $$("select[data-cat]", d).forEach(sel => {
+    sel.options[0].textContent = inheritText(grpSel.value, sel.dataset.cat);
+  }));
   d.showModal();
-  d.querySelector("input[name=name]").focus();
+  if (focus === "cats" && $("#dt-cats", d)) {
+    $("#dt-cats", d).scrollIntoView({ block: "start" });
+    const first = d.querySelector("select[data-cat]");
+    if (first) first.focus();
+  } else d.querySelector("input[name=name]").focus();
 }
 
 // ------------------------------------------------------------------ the view

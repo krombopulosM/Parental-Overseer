@@ -152,8 +152,11 @@ def check(name, got, want):
 
 def suite_kid():
     RESET, DROPPED = "reset", "timeout"
-    # Order matters: the direct-IP test runs before vps.test is ever looked up.
-    check("direct IP to a VPS (no DNS lookup) -> TCP reset at connect", tls("198.51.100.77", "vps.test"), "refused")
+    # Order matters: the direct-IP tests run before vps.test is ever looked up.
+    # An app reusing an address it remembers, naming a real site: not a bypass, goes through.
+    check("direct IP with a real site name (remembered address) -> allowed", tls("198.51.100.77", "vps.test"), "ok")
+    # Straight to an address and won't say which site: a VPN/proxy app's built-in server.
+    check("direct IP with no site name (VPN app's built-in server) -> reset", tls("198.51.100.92", None), "reset")
     check("DNS: normal site resolves", dns("site.test"), (0, ["198.51.100.10"]))
     check("DNS: adult site blocked", dns("adult-site.test")[0], 3)
     check("DNS: VPN provider domain blocked", dns("protonvpn.com")[0], 3)
@@ -375,7 +378,7 @@ def suite_parent_dhcp():
 
 def suite_parent_quarantined():
     check("cloned parent identity: treated as filtered until confirmed",
-          tls("198.51.100.77", "vps.test"), "refused")
+          tls("198.51.100.92", None), "reset")
 
 
 def suite_kid_paused_after_attack():
@@ -468,7 +471,7 @@ def suite_kid_adult():
     check("Google lookups are pointed at locked SafeSearch", (rc, _names(ans)),
           (0, ["forcesafesearch.google.com", "198.51.100.83"]))
     check("search over the SafeSearch address works", tls("198.51.100.83", "www.google.com"), "ok")
-    check("an unlocked Google address (never handed out) is refused", tls("198.51.100.84", "www.google.com"), "refused")
+    check("an unlocked Google address (never handed out) is refused", tls("198.51.100.84", "www.google.com"), "reset")
     check("YouTube lookups are pointed at Restricted Mode", _names(dns("www.youtube.com")[1])[:1], ["restrict.youtube.com"])
     check("known adult site blocked", dns("pornhub.com")[0], 3)
     check("unlisted site with an adult name blocked", dns("hotxxxvideos.test")[0], 3)
@@ -559,8 +562,8 @@ def suite_kid2_vpn_app():
 def suite_kid_tor():
     check("listed Tor relay: dropped", tls("198.51.100.87", "www.k3jd6a2bq7x.com"), "timeout")
     check("unlisted Tor relay on its own port 9001: dropped", raw_tcp("198.51.100.89", 9001, b"x"), "timeout")
-    check("unlisted Tor relay on 443 (never looked up in DNS): refused",
-          tls("198.51.100.89", "www.qzx4mt7wpl.com"), "refused")
+    check("unlisted Tor relay on 443 (never looked up in DNS): refused at its handshake",
+          tls("198.51.100.89", "www.qzx4mt7wpl.com"), "reset")
 
 
 def suite_console_tor():

@@ -106,6 +106,7 @@ def test_allowed_site_passes_and_stops_being_inspected(win):
 
 
 def test_direct_ip_is_reset_back_to_the_pc(win):
+    win.cfg["protections"]["direct_ip"] = "strict"
     syn = tcp(PC_IP, VPS, 40001, 443, 5000, SYN)
     assert push(win, "local", syn) == []                              # not sent on
     raw, outbound, iface = injected(win)[-1]
@@ -147,7 +148,8 @@ def test_hotspot_device_dns_and_traffic(win, monkeypatch):
     raw, outbound, _ = injected(win)[-1]
     assert wd.parse(raw).dst == PHONE and outbound is True
     assert DNSRecord.parse(wd.parse(raw).payload).header.rcode == 3
-    # forwarded traffic: same inspector
+    # forwarded traffic: same inspector (strict direct-address check: reset back to the phone)
+    win.cfg["protections"]["direct_ip"] = "strict"
     assert push(win, "forward", tcp(PHONE, VPS, 42000, 443, 9, SYN)) == []
     rst = wd.parse(injected(win)[-1][0])
     assert rst.dst == PHONE and rst.flags & wd.TCP_RST and injected(win)[-1][1] is True

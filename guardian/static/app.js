@@ -821,10 +821,58 @@ function pollUpdates() {
   }, 1500);
 }
 
+// ------------------------------------------------------------------ appearance (this browser only)
+const THEME_KEY = "pg-theme";
+function savedTheme() { try { return localStorage.getItem(THEME_KEY) || "auto"; } catch (_) { return "auto"; } }
+function applyTheme(t) {
+  const root = document.documentElement;
+  if (t === "light" || t === "dark") root.dataset.theme = t; else delete root.dataset.theme;
+  try { if (t === "auto") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, t); } catch (_) { /* private mode */ }
+  // the phone's status bar follows too
+  $$('meta[name="theme-color"]').forEach(m => {
+    const dark = m.media.includes("dark");
+    m.content = t === "light" ? "#ffffff" : t === "dark" ? "#161d2a" : (dark ? "#161d2a" : "#ffffff");
+  });
+}
+
+// ------------------------------------------------------------------ what each group blocks
+function renderCategories(c) {
+  const groups = c.groups;
+  $("#cat-table").innerHTML = `<table class="prot-table cat-table"><thead><tr><th>Category</th>
+    ${groups.map(g => `<th>${esc(g.name)}${g.filtered ? "" : `<div class="faint small">not filtered</div>`}</th>`).join("")}</tr></thead><tbody>
+    ${c.categories.map(cat => `<tr><td><b>${esc(cat.label)}</b><div class="small muted prot-does">${esc(cat.description)}</div></td>
+      ${groups.map(g => {
+        const on = g.categories.includes(cat.key);
+        return `<td data-label="${esc(g.name)}" class="${on ? "" : "prot-off"}"><label class="cat-switch">
+          <input type="checkbox" data-cat="${esc(cat.key)}" data-grp="${esc(g.name)}" ${on ? "checked" : ""}
+            aria-label="Block ${esc(cat.label)} for ${esc(g.name)}"><span>${on ? "Blocked" : "Allowed"}</span></label></td>`;
+      }).join("")}</tr>`).join("")}
+    </tbody></table>`;
+  $$("#cat-table input[data-cat]").forEach(box => box.onchange = async () => {
+    const cat = c.categories.find(x => x.key === box.dataset.cat);
+    try {
+      await post("/api/categories", { group: box.dataset.grp, category: box.dataset.cat, blocked: box.checked });
+      toast(`${cat.label} ${box.checked ? "blocked" : "allowed"} for ${box.dataset.grp}`);
+    } catch (e) { if (!(e instanceof AuthError)) toast(e.message, 4000); }
+    renderCategories(await api("/api/categories"));
+  });
+}
+
 views.system = {
   shell: () => `
-    <div class="page-head"><div><h1>System</h1></div>
+    <div class="page-head"><div><h1>Settings</h1></div>
       <div class="actions"><button id="sys-wizard">Run setup again</button><button id="sys-update">Update blocklists now</button></div></div>
+    <div class="panel" id="what-blocked"><div class="panel-head"><h2>What's blocked for each group</h2>
+      <div class="tools small muted">One device can differ: on Devices, right-click it (press and hold on a phone) and choose <i>Allow or block categories</i></div></div>
+      <div class="panel-body small muted">Each group blocks its own choice of sites - for example adult content blocked but
+        gambling allowed. VPN, Tor, proxy and encrypted-DNS sites follow the
+        <a href="#rules">ways around the filter</a> instead.</div>
+      <div class="scroll" id="cat-table"><div class="empty">Loading…</div></div></div>
+    <div class="panel" id="appearance"><div class="panel-head"><h2>Appearance</h2></div>
+      <div class="panel-body"><div class="theme-choice" role="radiogroup" aria-label="Appearance">
+        ${[["auto", "Match this device"], ["light", "Light"], ["dark", "Dark"]].map(([v, l]) =>
+          `<label class="theme-opt"><input type="radio" name="theme" value="${v}" ${savedTheme() === v ? "checked" : ""}><span>${l}</span></label>`).join("")}
+      </div><div class="small faint" style="margin-top:6px">Remembered in this browser.</div></div></div>
     <div class="panel" id="address"><div class="panel-head"><h2>Dashboard address</h2>
       <div class="tools"><button class="small" id="sys-rename">Change the name</button></div></div>
       <div class="panel-body" id="sys-address"></div></div>
@@ -864,6 +912,10 @@ views.system = {
     <div class="panel"><div class="panel-head"><h2>Blocklists</h2><div class="tools small muted" id="sys-lists-note"></div></div><div class="scroll" id="sys-lists"></div></div>
     <div class="panel"><div class="panel-head"><h2>Inspector counters</h2></div><div class="panel-body" id="sys-insp"></div></div>`,
   async init() {
+    $$('input[name="theme"]').forEach(r => r.onchange = () => applyTheme(r.value));
+    api("/api/categories").then(renderCategories).catch(e => {
+      if (!(e instanceof AuthError)) $("#cat-table").innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    });
     $("#sys-wizard").onclick = () => openWizard(1).catch(e => toast(e.message, 4000));
     $("#sys-rename").onclick = () => openWizard(1).catch(e => toast(e.message, 4000));
     api("/api/address").then(a => { $("#sys-address").innerHTML = addressCard(a); bindAddressCard($("#sys-address")); });
@@ -940,7 +992,8 @@ views.system = {
 
 // ------------------------------------------------------------------ router & events
 async function render() {
-  const [view, ...rest] = (location.hash.slice(1) || "overview").split("/");
+  let [view, ...rest] = (location.hash.slice(1) || "overview").split("/");
+  if (view === "settings") view = "system";
   const v = views[view] ? view : "overview";
   state.view = v; state.param = rest.length ? decodeURIComponent(rest.join("/")) : null;
   const navV = v === "device" ? "devices" : v;

@@ -123,7 +123,7 @@ safe: it updates the program and lets you re-pick the ports, and keeps your pass
     <code>family.home.arpa</code> - it always works at home, because every device asks the gateway for addresses.
     The Pi's own address, <code>192.168.50.1</code>, works too.</li>
   <li><b>No port number needed</b> - the Pi answers on the normal web port.</li>
-  <li><b>On a phone:</b> System → Dashboard address shows a QR code - point the camera at it. Then use your browser's
+  <li><b>On a phone:</b> Settings → Dashboard address shows a QR code - point the camera at it. Then use your browser's
     <i>Add to Home Screen</i> and the dashboard opens like an app, with its own icon.</li>
   <li><b>Children's devices</b> can look the name up, but only adults' devices can open the dashboard, and it always
     asks for the password.</li>
@@ -144,7 +144,7 @@ its choices do:</p>
     blocking, but unknowns are reported rather than stopped) or <b>Light</b> (blocks, reports, never holds or
     pauses - for older teenagers).</li>
   <li><b>Fine-tune</b> - every setting the level chose, individually.</li>
-  <li><b>What to block</b> - the site categories for children.</li>
+  <li><b>What to block</b> - the site categories for children (each group can be changed on its own later, in <b>Settings → What's blocked for each group</b>).</li>
   <li><b>Ways around</b> - each anti-bypass protection (VPNs, Tor, proxies, encrypted DNS, disguised tunnels and the
     rest) can be switched on or off; each says what switching it off allows. All are on in every preset.</li>
   <li><b>Devices</b> - name the devices seen so far and put each in a group. The device you're using is suggested as
@@ -156,7 +156,7 @@ its choices do:</p>
 <p>Most choices take effect the moment you press <b>Finish</b>. The few that can't change while the service runs
 (the DNS port and dashboard access on a PC, fail-open/closed on the Pi) make it restart itself - the page reconnects
 on its own after a few seconds, and you stay signed in. Choices are saved in <code>config.local.yaml</code> next to
-<code>config.yaml</code>. Run the wizard again any time from <b>System → Run setup again</b>. Which network port is
+<code>config.yaml</code>. Run the wizard again any time from <b>Settings → Run setup again</b>. Which network port is
 which is deliberately <i>not</i> in the web wizard: one wrong click there would cut the dashboard off, so that stays
 in <code>setup-pi.sh</code>.</p>
 <h3>Then</h3>
@@ -185,7 +185,7 @@ filter driver.</p>
 
 <section id="updates" data-title="Updates">
 <h2>Updates</h2>
-<p>The gateway checks for a new version every hour, and <b>System → Updates → Check for updates</b> checks straight
+<p>The gateway checks for a new version every hour, and <b>Settings → Updates → Check for updates</b> checks straight
 away. New versions install by themselves (or wait for you to press <b>Install now</b>, if you prefer - the switch is
 on the same panel). An update <b>never interrupts the Wi-Fi or the filtering</b>, not even for a second:</p>
 <ol>
@@ -215,12 +215,12 @@ from a development folder (e.g. on your PC) only checks, and is updated with <co
   <dt>Overview</dt><dd>Today at a glance: devices online, sites looked up and blocked, bypass attempts, data used, time per service, and the latest attempts.</dd>
   <dt>Live</dt><dd>What every device is doing right now, as a sentence ("Likely playing Roblox with YouTube in the background"). Click a device for a live graph of the last 5 minutes by activity, and its current connections. Updates every 2 seconds.</dd>
   <dt>Health</dt><dd>Is protection working? A score and checks (firewall, tamper watch, lists, outages), a chart of attempts by category over 24 hours, and a card per child's device with a status: <b>Clean</b>, <b>Curious</b>, <b>Persistent</b> or <b>Tampering</b>.</dd>
-  <dt>Devices</dt><dd>A table of every device seen, sortable by any column. <b>Right-click</b> a device (on a phone, <b>press and hold</b> it, or tap its ⋯ button) to rename it, move it to another group, open its settings, pause it, <b>block all its traffic</b> until you unblock it, copy its address, or forget it. Ctrl- or Shift-click to select several and act on them together; on a phone choose <i>Select more…</i>. Double-click (or tap, on a phone) opens the device. F2 renames in place. Each device page shows today's activity timeline, time and data per service, live connections, lookups and bypass attempts. A red <i>identity check</i> badge means its identity looks copied (see "Protecting the gateway").</dd>
+  <dt>Devices</dt><dd>A table of every device seen, sortable by any column. <b>Right-click</b> a device (on a phone, <b>press and hold</b> it, or tap its ⋯ button) to rename it, move it to another group, open its settings, pause it, <b>block all its traffic</b> until you unblock it, <b>allow or block categories just for it</b>, copy its address, or forget it. Ctrl- or Shift-click to select several and act on them together; on a phone choose <i>Select more…</i>. Double-click (or tap, on a phone) opens the device. F2 renames in place. Each device page shows today's activity timeline, time and data per service, live connections, lookups and bypass attempts. A red <i>identity check</i> badge means its identity looks copied (see "Protecting the gateway").</dd>
   <dt>Activity</dt><dd>Every connection (device, site, duration, data down/up, blocked or not) and every lookup, filterable by device.</dd>
   <dt>Alerts</dt><dd>Every attempt to get around the filter, explained in plain English, with a confidence score. <b>Confirmed</b> and <b>Not a bypass</b> teach the scoring; Not a bypass also undoes the block where that's safe.</dd>
   <dt>Reviews</dt><dd>Downloads and videos held for your decision. <b>Approve</b> lets that device use the site again; <b>Deny</b> keeps it blocked for that device.</dd>
   <dt>Rules &amp; schedules</dt><dd>Block or allow a site for everyone or a group; internet-off times (e.g. school nights 21:00-07:00); destinations blocked automatically; things you've marked as fine.</dd>
-  <dt>System</dt><dd>Component health, blocklist sizes and update status, inspector counters, password.</dd>
+  <dt>Settings</dt><dd>What each group blocks (a tick per category per group), appearance (light, dark, or match the device), the dashboard address, updates, help &amp; diagnostics, component health, blocklist sizes, inspector counters, password.</dd>
 </dl>
 <h3>Groups</h3>
 <p>Every device belongs to one group, and the group decides its rules. New and unknown devices go into
@@ -240,6 +240,13 @@ hardware address is filtered automatically.</p>
 <p>The lists come from well-maintained public projects (Hagezi, StevenBlack) plus the gateway's own built-in lists, and
 refresh daily. A blocked site gets "doesn't exist" as its answer. The same checks run again on the site name inside each
 connection, so a site reached without asking the gateway (a hard-coded address, a hosts-file entry) is still caught.</p>
+<p><b>Different rules for different groups and children.</b> <b>Settings → What's blocked for each group</b> has a tick for
+every category in every group - for example adult content blocked for everyone but gambling allowed for the teenagers'
+group. One device can differ from its group: on <b>Devices</b>, right-click it (press and hold on a phone) and choose
+<b>Allow or block categories</b> - <i>Like its group</i>, <i>Always allow</i> or <i>Always block</i> for each category.
+Switching off <i>Adult content</i> also switches off the extra adult checks (name heuristics, family DNS, video from unknown
+sites); switching off <i>Search engines without SafeSearch</i> also unlocks SafeSearch. A device whose identity looks
+copied (see "Protecting the gateway") gets its group's settings only, never another child's allowances.</p>
 <p>The gateway also checks the <b>alias chain</b> of every answer: an innocent-looking name that quietly points to a blocked one is blocked too.</p>
 </section>
 
@@ -306,7 +313,7 @@ something that slips past one is caught by the next.</p>
 <tr><td>Tor Browser</td><td>Tor relays and download sites are blocked; its hidden "bridges" use either non-web protocols (blocked) or tricks the inspector rejects.</td></tr>
 <tr><td>iCloud Private Relay</td><td>Switched off using Apple's own network mechanism.</td></tr>
 <tr><td>Hiding the site name (Encrypted Client Hello)</td><td>Browsers are never given the keys it needs; connections that try it anyway are reset.</td></tr>
-<tr><td>Typing an IP address / editing the hosts file</td><td>Connections to addresses the gateway didn't hand out are refused.</td></tr>
+<tr><td>Typing an IP address / editing the hosts file</td><td>A connection straight to an address is still filtered by the site it names; one that won't say which site it's for is refused, and a hosts-file entry pointing Google or YouTube past SafeSearch is refused.</td></tr>
 <tr><td>A blocked site behind a shared address (CDNs)</td><td>The site name inside the connection is checked against the lists as well.</td></tr>
 <tr><td>Web archives, translators, caches</td><td>Blocked or decoded and checked (see Adult content protection).</td></tr>
 <tr><td>Smuggling data through DNS ("DNS tunnelling")</td><td>Detected from streams of long random names; the domain is blocked for that device.</td></tr>
@@ -329,7 +336,7 @@ the servers, the protocol and the fingerprint - so switching it off really does 
 <tr><td><b>Encrypted DNS</b></td><td>DoH / DoT resolvers, Firefox's switch for it</td><td>Looking sites up somewhere else, which skips the site filter (the deeper checks still apply)</td></tr>
 <tr><td><b>Disguised tunnels</b></td><td>The genuine-web-traffic check on ports 80/443, server-speaks-first protocols, split handshakes</td><td>Stealth VPN modes and Tor bridges that disguise themselves as web traffic. A recognisable VPN or SOCKS protocol is still stopped while VPNs / Proxies are on.</td></tr>
 <tr><td><b>Hidden site names</b></td><td>Connections without a site name, Encrypted Client Hello, ECH keys in DNS, QUIC</td><td>Connections that hide which site they're for</td></tr>
-<tr><td><b>Direct-to-address</b></td><td>Only connecting to addresses the gateway's DNS gave out, and the site name matching that address. <i>Block</i>, <i>Allow and tell me</i>, or <i>Off</i>.</td><td>Apps with built-in server addresses, domain fronting</td></tr>
+<tr><td><b>Direct-to-address</b></td><td>Connections to an address the gateway's DNS didn't give out are judged by the site they name: a real, allowed site goes through (apps reuse addresses they remember), one that names no site is refused, SafeSearch sites must use the locked address, and the name must match an address that was looked up. <i>Block unnamed ones</i> (recommended), <i>Strict: block all</i> (refuses every connection not looked up first - catches more, but some apps break), <i>Allow and tell me</i>, or <i>Off</i>.</td><td>Apps with built-in server addresses, domain fronting</td></tr>
 <tr><td><b>DNS tunnels</b></td><td>Traffic smuggled inside DNS lookups, tunnel-only record types</td><td>DNS-tunnel apps</td></tr>
 <tr><td><b>Traffic other than the web</b></td><td><i>Web only</i>, <i>Web + online games (UDP)</i>, or <i>Allow everything</i> - which still checks other traffic for VPN, Tor and torrent signatures while those protections are on</td><td>Unrecognised non-web protocols</td></tr>
 <tr><td><b>Torrent protocols</b></td><td>BitTorrent peer traffic (even disguised on web ports), trackers, DHT/uTP, peer fan-out. Torrent <i>websites</i> are the separate "Torrents" category.</td><td>Torrent clients that reach their peers</td></tr>
@@ -352,7 +359,7 @@ knowing the server at all - they target how these tools <i>work</i>:</p>
 <tbody>
 <tr><td><b>Web ports only</b></td><td>Children's devices can only send normal web traffic. VPN protocols (WireGuard, OpenVPN, IPsec…), Tor's own relay port and most bridges simply can't leave the device - whichever server they're aimed at.</td></tr>
 <tr><td><b>Genuine-protocol check</b></td><td>Traffic on web ports must really be a secure web connection or a web request. Disguised tunnels (Shadowsocks, obfs4 Tor bridges, "stealth" modes that fake it) fail.</td></tr>
-<tr><td><b>Only addresses the gateway handed out</b></td><td>VPN apps and Tor connect straight to server addresses they carry inside them; they never ask DNS. A child's device may only connect to addresses the gateway's own DNS gave it, so a brand-new server, an unlisted relay or a Tor Browser from a USB stick is refused on its very first connection.</td></tr>
+<tr><td><b>Connections straight to an address</b></td><td>VPN apps and Tor connect straight to server addresses they carry inside them; they never ask DNS, and they don't name a real site. Ordinary apps also reuse addresses they remember, so that alone isn't treated as a bypass: a connection that names a real, allowed site goes through, and one that won't say which site it's for - a brand-new VPN server, an unlisted relay - is refused at its first handshake. Parents who prefer can choose <i>Strict</i>, which refuses every connection that wasn't looked up first.</td></tr>
 <tr><td><b>Tor's handshake shape</b></td><td>Tor's connections use made-up site names (www.<i>random letters</i>.com) that were never looked up - recognised and blocked even where the DNS check only reports.</td></tr>
 <tr><td><b>Learned software fingerprints</b></td><td>Every app opens secure connections with its own characteristic "hello" (its TLS fingerprint). When a tunnel is caught - by its behaviour, a hidden site name, a disguise, or your "Confirmed" click - its fingerprint is remembered, and that software is then blocked on <b>any</b> server, including ones that appear later. Fingerprints that browsers and ordinary apps use for normal sites are never learned. Learned fingerprints are listed on Rules &amp; schedules.</td></tr>
 <tr><td><b>Unknown destinations</b></td><td>The one thing a tunnel with a genuine domain and genuine encryption (a VPN routed through a CDN, a Tor "WebTunnel" bridge, a VPN on a rented server) can't hide is that it carries a lot of traffic to <i>somewhere</i>. For children, heavy or long-running traffic to a site that isn't popular, a known service, used by an adult in the house, or approved by you is cut and held on the Reviews page. Hosting platforms where anyone can run a server (Cloudflare Workers, Amazon EC2, Heroku…) never count as known.</td></tr>
@@ -572,7 +579,7 @@ and talking through an alert rather than just punishing it - leads to fewer atte
 <section id="faq" data-title="Troubleshooting &amp; FAQ">
 <h2>Troubleshooting &amp; FAQ</h2>
 <h3 id="diagnostics">Getting help: the diagnostics file</h3>
-<p>If something isn't working, go to <b>System → Help &amp; diagnostics</b>, say in a sentence what's wrong, and press
+<p>If something isn't working, go to <b>Settings → Help &amp; diagnostics</b>, say in a sentence what's wrong, and press
 <b>Download diagnostics</b>. Send the file to whoever helps you with Parental Gateway. It contains the gateway's own
 logs (kept on the gateway, rotated so they never fill it up) and a snapshot of its state: version, which parts are
 running, the setup checklist, settings, update history, firewall rules, database health and recent alerts.</p>

@@ -81,6 +81,7 @@ class Guardian:
         elif self.gateway is not None:
             kill = self.gateway.kill_flow
         self.downloads = DownloadGuard(cfg, self.db, self.lists, self.alerts, kill_flow=kill)
+        self.downloads.categories_for = lambda dev, grp: self.policy.categories_for(dev, grp)
         from .adult import AdultGuard
         self.adult = AdultGuard(cfg, self.lists, self.alerts)
         self.downloads.adult = self.adult

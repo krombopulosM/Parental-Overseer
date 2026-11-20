@@ -12,7 +12,8 @@ from guardian.config import load_config
 class Ctx:
     def __init__(self, filtered=True, mode=None):
         self.filtered = filtered
-        self.g = {"filtered": filtered, **({"adult_protection": mode} if mode else {})}
+        self.g = {"filtered": filtered, "categories": ["adult", "unsafe_search"],
+                  **({"adult_protection": mode} if mode else {})}
         self.device_id, self.ip, self.group = "kid", "192.168.50.23", "kids"
 
 
@@ -172,3 +173,19 @@ def test_family_dns_unreachable_falls_back(tmp_path):
     res, db, cache, ask = make_resolver(tmp_path, family_port=9)      # nothing listens on port 9
     assert ask("ok.example") == (0, ["5.6.7.8"])
     assert res.counters["family_dns_unreachable"] == 1
+
+
+def test_unlocked_google_address_is_refused(env):
+    """Pointing www.google.com at a normal Google address (hosts file, own DNS) to skip
+    locked SafeSearch: a direct connection to a SafeSearch site is refused, while other
+    direct connections to real sites are fine."""
+    from conftest import Conn, client_hello
+    env.insp.adult = AdultGuard(env.cfg, env.lists, env.alerts)
+    env.cfg["groups"]["quarantine"]["categories"].append("unsafe_search")     # SafeSearch locked for this group
+    v = Conn(env.insp, "192.168.1.23", "142.250.1.1", 443).open_and_send(client_hello("www.google.com"))
+    assert (v.action, v.kind) == ("reset", "no_dns")
+    v = Conn(env.insp, "192.168.1.23", "93.184.216.34", 443, sport=40001).open_and_send(client_hello("www.example.com"))
+    assert v.action == "accept"
+    env.dnscache.record("192.168.1.23", ["forcesafesearch.google.com"], [("216.239.38.120", 300)])
+    v = Conn(env.insp, "192.168.1.23", "216.239.38.120", 443, sport=40002).open_and_send(client_hello("www.google.com"))
+    assert v.action == "accept"                                  # the locked address we handed out

@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0e131c; --panel: #161d2a; --panel-2: #1d2636; --border: #263044;
   --text: #e7ecf4; --muted: #8d99ae; --faint: #5d6880;
   --accent: #5b9dff; --accent-soft: rgba(91,157,255,.14);
@@ -16,8 +17,11 @@
   --act-video: #3987e5; --act-gaming: #d95926; --act-browsing: #199e70; --act-download: #c98500;
   --act-social: #d55181; --act-music: #0ca30c; --act-call: #9085e9; --act-other: #6b7280; --act-idle: #3a4356;
 }
+/* Light colours: when the device prefers light (unless "Dark" was chosen in Settings),
+   or when "Light" was chosen. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
     --cat-vpn: #2a78d6; --cat-dns: #eb6834; --cat-disguise: #1baf7a; --cat-torrent: #eda100; --cat-tamper: #e87ba4;
     --cat-download: #008300; --cat-adult: #6250d6;
     --act-video: #2a78d6; --act-gaming: #eb6834; --act-browsing: #1baf7a; --act-download: #eda100;
@@ -29,6 +33,19 @@
     --warn: #b7791f; --warn-soft: rgba(183,121,31,.12);
     --bad: #d03b3b; --bad-soft: rgba(208,59,59,.10);
   }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --cat-vpn: #2a78d6; --cat-dns: #eb6834; --cat-disguise: #1baf7a; --cat-torrent: #eda100; --cat-tamper: #e87ba4;
+    --cat-download: #008300; --cat-adult: #6250d6;
+    --act-video: #2a78d6; --act-gaming: #eb6834; --act-browsing: #1baf7a; --act-download: #eda100;
+    --act-social: #e87ba4; --act-music: #008300; --act-call: #6250d6; --act-other: #9aa3b2; --act-idle: #dfe4ec;
+    --bg: #f4f6fa; --panel: #ffffff; --panel-2: #f0f3f8; --border: #dfe4ec;
+    --text: #18202e; --muted: #5d6a80; --faint: #8a95a8;
+    --accent: #2f6fdc; --accent-soft: rgba(47,111,220,.10);
+    --ok: #138a57; --ok-soft: rgba(19,138,87,.10);
+    --warn: #b7791f; --warn-soft: rgba(183,121,31,.12);
+    --bad: #d03b3b; --bad-soft: rgba(208,59,59,.10);
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -670,3 +687,33 @@ button.danger-fill { background: var(--bad); border-color: var(--bad); color: #f
   .dt-dialog { padding: 18px 16px; }
   .dt-dialog-foot button { flex: 1; }
 }
+
+/* ---------- settings: what each group blocks, appearance ---------- */
+.cat-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.cat-switch input { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--bad); cursor: pointer; }
+.cat-switch span { color: var(--bad); font-weight: 600; }
+.prot-off .cat-switch span { color: var(--ok); }
+.cat-table td:first-child { min-width: 220px; }
+.theme-choice { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.theme-opt { position: relative; cursor: pointer; }
+.theme-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.theme-opt span { display: block; padding: 8px 16px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.theme-opt + .theme-opt span { border-left: 1px solid var(--border); }
+.theme-opt input:checked + span { background: var(--accent-soft); color: var(--text); }
+.theme-opt input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 700px) {
+  .theme-choice { display: flex; }
+  .theme-opt { flex: 1; text-align: center; }
+  .theme-opt span { padding: 10px 6px; font-size: 14px; }
+  .cat-table td:first-child { min-width: 0; }
+}
+
+@media (max-width: 700px) { #what-blocked .scroll { overflow: visible; } }
+
+/* device dialog: categories for this one device */
+.dt-dialog form { max-height: calc(100vh - 80px); overflow-y: auto; }
+.dt-cat-list { display: grid; gap: 6px; margin-top: 6px; }
+.dt-cat { display: grid; grid-template-columns: 1fr minmax(170px, auto); gap: 10px; align-items: center; }
+.dt-cat-name { font-size: 13px; }
+.dt-cat select { width: 100%; }
+@media (max-width: 700px) { .dt-cat { grid-template-columns: 1fr; gap: 2px; } }

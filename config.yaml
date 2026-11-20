@@ -149,7 +149,8 @@ protections:
   encrypted_dns: true          # DoH / DoT resolvers, Firefox's DoH canary
   disguised_tunnels: true      # web ports must carry genuine web traffic
   hidden_names: true           # connections must name their site (no-SNI, ECH, QUIC off, HTTPS records)
-  direct_ip: enforce           # only connect to addresses our DNS gave out: enforce | log | off
+  direct_ip: enforce           # connections to addresses not looked up through us: enforce (block the ones
+                               # that won't say which site they're for) | strict (block all) | log | off
   dns_tunnels: true            # DNS tunnelling + odd record types
   non_web: block               # block (web only) | games (web + UDP) | allow (everything, still checked)
   torrents: true               # BitTorrent protocol, trackers, DHT, peer fan-out
