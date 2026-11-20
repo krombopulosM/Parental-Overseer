@@ -9,3 +9,4 @@ blocklists/cache/
 logs/
 *.zip
 image/out/
+/out/

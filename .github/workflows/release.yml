@@ -51,14 +51,15 @@ jobs:
           RELEASE_URL: https://github.com/${{ github.repository }}/releases/${{ env.TAG != '' && format('download/{0}', env.TAG) || 'latest/download' }}
           UPDATE_URL: https://github.com/${{ github.repository }}.git
         run: |
-          sudo --preserve-env=RELEASE_URL,UPDATE_URL image/build.sh --out "$PWD/out"
-          sudo chown -R "$USER" out
-          rm -f out/*raspios*        # the downloaded base image
-          ls -la out
+          # Output outside the checkout, so the build sees a clean tree (exact commit, nothing extra).
+          sudo --preserve-env=RELEASE_URL,UPDATE_URL image/build.sh --out "$RUNNER_TEMP/out"
+          sudo chown -R "$USER" "$RUNNER_TEMP/out"
+          rm -f "$RUNNER_TEMP"/out/*raspios*        # the downloaded base image
+          ls -la "$RUNNER_TEMP/out"
       - uses: actions/upload-artifact@v4
         with:
           name: image
-          path: out/*
+          path: ${{ runner.temp }}/out/*
           retention-days: 7
 
   cardmaker:

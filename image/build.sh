@@ -76,13 +76,27 @@ SRC="$WORK/src"
 echo "==> Taking the app from $SOURCE (committed state${BRANCH:+, branch $BRANCH})"
 git clone -q --depth 1 ${BRANCH:+--branch "$BRANCH"} "file://$SOURCE" "$SRC"
 git -C "$SRC" remote set-url origin "$UPDATE_URL"
-if [ -n "$(git -C "$SOURCE" status --porcelain)" ]; then
+# Uncommitted work (for trying changes before committing): changed tracked files,
+# and new files under the source folders - never build output, downloads or big files
+# (a release build once swept the downloaded Raspberry Pi OS image into the card).
+OUT_REL=$(realpath -m --relative-to="$SOURCE" "$OUT")
+changed_files() {
+  (cd "$SOURCE" && { git ls-files -z -m; git ls-files -z -o --exclude-standard -- \
+     guardian cardmaker deploy image tools tests blocklists run.py config.yaml VERSION 'requirements*.txt'; } |
+   while IFS= read -r -d '' f; do
+     case "$f" in "$OUT_REL"/*|image/out/*) continue ;; esac
+     [ -f "$f" ] && [ "$(stat -c %s "$f")" -le 5242880 ] && printf '%s\0' "$f"
+   done)
+}
+DIRTY=""
+if [ -n "$(changed_files | head -c1)" ]; then
+  DIRTY=1
   echo "    (uncommitted changes in $SOURCE are included; this build won't know its exact commit)"
-  (cd "$SOURCE" && git ls-files -z -co --exclude-standard | xargs -0 cp --parents -t "$SRC" 2>/dev/null || true)
+  (cd "$SOURCE" && changed_files | xargs -0 -r cp --parents -t "$SRC")
 fi
 VERSION=$(python3 -c "import sys; sys.path.insert(0, '$SRC'); from guardian.updater import read_version; print(read_version('$SRC'))")
 COMMIT=$(git -C "$SRC" rev-parse --short HEAD)
-[ -n "$(git -C "$SOURCE" status --porcelain)" ] && COMMIT="$COMMIT-dirty"
+[ -n "$DIRTY" ] && COMMIT="$COMMIT-dirty"
 NAME="parental-gateway-$VERSION-arm64"
 
 # ------------------------------------------------------------------ unpack + grow
